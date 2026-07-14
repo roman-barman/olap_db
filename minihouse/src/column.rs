@@ -58,4 +58,36 @@ impl Column {
             _ => panic!("push_str on {:?} column", self.data_type()),
         }
     }
+
+    pub fn filter(&self, mask: &[bool]) -> Column {
+        assert_eq!(
+            mask.len(),
+            self.len(),
+            "filter: mask length != column length"
+        );
+        let cap = mask.iter().filter(|&&m| m).count();
+
+        if cap == 0 {
+            return Column::new(self.data_type());
+        }
+        if cap == mask.len() {
+            return self.clone();
+        }
+
+        match self {
+            Column::Int64(v) => Column::Int64(filter_slice(v, mask, cap)),
+            Column::Float64(v) => Column::Float64(filter_slice(v, mask, cap)),
+            Column::String(v) => Column::String(filter_slice(v, mask, cap)),
+        }
+    }
+}
+
+fn filter_slice<T: Clone>(v: &[T], mask: &[bool], cap: usize) -> Vec<T> {
+    let mut out = Vec::with_capacity(cap);
+    out.extend(
+        v.iter()
+            .zip(mask)
+            .filter_map(|(x, &m)| m.then(|| x.clone())),
+    );
+    out
 }
