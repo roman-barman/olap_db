@@ -1,28 +1,12 @@
 use crate::column::Column;
 use crate::types::DataType;
+use crate::value::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq, Copy)]
 pub enum CmpOp {
     Gt,
     Lt,
     Eq,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Value {
-    Int64(i64),
-    Float64(f64),
-    String(String),
-}
-
-impl Value {
-    pub fn data_type(&self) -> DataType {
-        match self {
-            Value::Int64(_) => DataType::Int64,
-            Value::Float64(_) => DataType::Float64,
-            Value::String(_) => DataType::String,
-        }
-    }
 }
 
 pub fn eval_predicate(col: &Column, op: CmpOp, value: &Value) -> Vec<bool> {
@@ -175,12 +159,5 @@ mod tests {
         let col = Column::new(DataType::String);
         let mask = eval_predicate(&col, CmpOp::Eq, &Value::String("a".into()));
         assert_eq!(mask, Vec::<bool>::new());
-    }
-
-    #[test]
-    fn value_data_type_matches_variant() {
-        assert_eq!(Value::Int64(1).data_type(), DataType::Int64);
-        assert_eq!(Value::Float64(1.0).data_type(), DataType::Float64);
-        assert_eq!(Value::String("a".into()).data_type(), DataType::String);
     }
 }
