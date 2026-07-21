@@ -1,6 +1,7 @@
 #![warn(clippy::all)]
 
 mod aggregate;
+mod aggregate_factory;
 mod block;
 mod column;
 mod helpers;
