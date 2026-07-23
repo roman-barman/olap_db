@@ -88,3 +88,89 @@ ratio 1–3x in favor of columns at every selectivity, peaking at ~1%.
 - "The executor must filter only what is consumed downstream" — a hands-on
   discovery of projection pushdown, one of the key optimizations in analytical
   databases. To be continued in iteration 2: don't read unneeded files from disk.
+
+# Benchmark: Iteration 1, after projection pushdown
+
+> Second mark of the project's performance history. Recorded **after** the
+> `execute` fix: only the aggregate's column is filtered
+> (`block.column(agg).filter(&mask)`), not the whole block.
+> For the "before" baseline, see `benchmark-iteration-1-en.md`.
+
+## Environment
+
+| Parameter | Value |
+|---|---|
+| Date | 2026-07-23 |
+| CPU / RAM | Intel Core i7-1255U (2P+8E, 12 threads) / 16 GB |
+| Method | median of 7 runs, first run discarded (warm-up), `black_box` |
+
+Dataset and contender unchanged (10M rows, seed 42, 8,192-row blocks,
+naive `Vec<Row>`). Cross-check passed on every query ✅
+
+## Results
+
+### `sum(dur) WHERE ts > X`
+
+| Selectivity | Columnar | Row-based | Ratio (row/col) | Before (col.) | Speedup |
+|---|---|---|---|---|---|
+| ~1%  | 18.6 ms | 24.7 ms | **1.3x** | 56.3 ms  | 3.0× |
+| ~50% | 45.6 ms | 56.3 ms | **1.2x** | 279.6 ms | 6.1× |
+| ~99% | 20.4 ms | 24.3 ms | **1.2x** | 267.0 ms | **13.1×** |
+
+### `sum(dur)` without a filter
+
+| Query | Columnar | Row-based | Ratio (row/col) |
+|---|---|---|---|
+| no filter | 7.0 ms | 26.4 ms | **3.7x** |
+
+### `count() WHERE ts > X`
+
+| Selectivity | Columnar | Row-based | Ratio (row/col) | Before (col.) |
+|---|---|---|---|---|
+| ~1%  | 18.3 ms | 24.0 ms | **1.3x** | 58.5 ms |
+| ~50% | 44.0 ms | 26.5 ms | **0.6x** | 289.5 ms |
+| ~99% | 19.7 ms | 26.6 ms | **1.3x** | 273.9 ms |
+
+## Forecast check
+
+Forecast from the "before" report: columnar filtered sum at ~15–35 ms,
+ratio 1–3x in favor of columns at every selectivity. Actual: 18–46 ms,
+ratio 1.2–1.3x on sum — forecast confirmed. A single line of code delivered
+up to a 13x speedup: that is the measured cost of cloning unneeded
+`String` columns.
+
+## Interpreting the remaining effects
+
+1. **Why ~50% is slower than the edges (45 ms vs ~19 ms).** The url clones
+   are gone; the remainder is the branch predictor struggling with an
+   unpredictable mask inside our own pipeline (`filter_map` in
+   `Column::filter`), plus the `eval_predicate` and `cap`-counting passes.
+   A possible cure — branch-free filtering (always write, advance the index
+   by `m as usize`) — is deferred to the backlog until iteration 6
+   (vectorization), to be decided by a criterion duel.
+
+2. **The count ~50% anomaly: the only 0.6x ratio — credit to the contender,
+   not a flaw of columns.** The row-based `count()` compiles to branch-free
+   code (compare → increment), so its times are flat across selectivities
+   (24–26.5 ms), unlike its sum counterpart (56 ms at 50%). Meanwhile the
+   columnar count still drags the full pipeline: mask → column filter → `len`.
+
+## Optimization backlog (not now)
+
+- **Aggregate pushdown for count**: count the trues in the mask without
+  materializing a column — `cap` is already computed in `filter`. Removes
+  the 0.6x anomaly.
+- **Branch-free filtering** in `Column::filter` — a criterion-duel candidate
+  for iteration 6.
+- **Mask fast paths** (all-true/all-false) never fire on random data; they
+  will pay off on sorted data with the sparse index (iteration 4).
+
+## Iteration 1 verdict
+
+The columnar engine beats the row-based one on every sum query (1.2–1.3x
+filtered, 3.7x unfiltered) with aggregation throughput of ~11.4 GB/s
+(80 MB / 7.0 ms) — memory-bound, the core is healthy. The main lesson of the
+iteration: **the executor must process only the data that is consumed
+downstream** — projection pushdown delivered up to 13x and will continue on
+disk (iteration 2: don't read unneeded files) and in the index
+(iteration 4: don't read unneeded granules).

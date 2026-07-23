@@ -36,12 +36,11 @@ pub fn execute(table: &Table, q: &SimpleQuery) -> Option<Value> {
                     *op,
                     val,
                 );
-                let filtered = block.filter(&mask);
-                agg.update(
-                    filtered
-                        .column(q.aggregate.0)
-                        .expect("invariant broken: block missing schema column"),
-                );
+                let filtered = block
+                    .column(q.aggregate.0)
+                    .expect("invariant broken: block missing schema column")
+                    .filter(&mask);
+                agg.update(&filtered);
             }
             None => agg.update(
                 block

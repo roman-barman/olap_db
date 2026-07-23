@@ -43,7 +43,6 @@ fn count_bench(col_table: &Table, row_table: &RowTable) {
     }
     println!("cross-check passed");
 
-    // 2. Матрица замеров
     for (label, threshold) in [("~1%", 990_000), ("~50%", 500_000), ("~99%", 10_000)] {
         let c = bench("columnar", 7, || {
             execute(&col_table, &count_query(threshold))
