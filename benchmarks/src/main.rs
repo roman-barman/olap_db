@@ -1,26 +1,16 @@
 #![warn(clippy::all)]
 
-use crate::aggregate_factory::AggKind;
 use crate::data_generator::generate;
-use crate::execute::{SimpleQuery, execute};
-use crate::query::CmpOp;
 use crate::rowstore::{RowTable, count_where_ts_gt, sum_dur_where_ts_gt};
-use crate::table::Table;
-use crate::value::Value;
+use minihouse::aggregate_factory::AggKind;
+use minihouse::execute::{SimpleQuery, execute};
+use minihouse::query::CmpOp;
+use minihouse::table::Table;
+use minihouse::value::Value;
 use std::time::{Duration, Instant};
 
-mod aggregate;
-mod aggregate_factory;
-mod block;
-mod column;
 mod data_generator;
-mod execute;
-mod helpers;
-mod query;
 mod rowstore;
-mod table;
-mod types;
-mod value;
 
 fn main() {
     let (col_table, row_table) = generate(10_000_000, 8192);

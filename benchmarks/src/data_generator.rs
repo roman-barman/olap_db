@@ -1,8 +1,8 @@
-use crate::block::Block;
-use crate::column::Column;
 use crate::rowstore::{Row, RowTable};
-use crate::table::Table;
-use crate::types::DataType;
+use minihouse::block::Block;
+use minihouse::column::Column;
+use minihouse::table::Table;
+use minihouse::types::DataType;
 use rand::prelude::StdRng;
 use rand::{RngExt, SeedableRng};
 
