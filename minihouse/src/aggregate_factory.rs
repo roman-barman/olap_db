@@ -1,5 +1,5 @@
+use crate::DataType;
 use crate::aggregate::{Aggregate, Count, MaxF64, MaxI64, MinF64, MinI64, SumF64, SumI64};
-use crate::types::DataType;
 
 #[derive(Debug, Clone, Copy)]
 pub enum AggKind {

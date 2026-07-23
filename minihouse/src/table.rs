@@ -1,6 +1,6 @@
+use crate::DataType;
 use crate::block::Block;
 use crate::helpers;
-use crate::types::DataType;
 
 pub struct Table {
     schema: Vec<(String, DataType)>,

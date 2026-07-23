@@ -1,5 +1,5 @@
+use crate::DataType;
 use crate::column::Column;
-use crate::types::DataType;
 use crate::value::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq, Copy)]

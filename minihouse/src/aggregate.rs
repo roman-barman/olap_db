@@ -1,5 +1,4 @@
 use crate::column::Column;
-use crate::types::DataType;
 use crate::value::Value;
 
 pub trait Aggregate {
@@ -179,7 +178,7 @@ impl Aggregate for MaxF64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::DataType;
+    use crate::DataType;
 
     #[test]
     fn count_default_result_is_zero() {

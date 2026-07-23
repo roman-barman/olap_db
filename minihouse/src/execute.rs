@@ -56,9 +56,9 @@ pub fn execute(table: &Table, q: &SimpleQuery) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DataType;
     use crate::block::Block;
     use crate::column::Column;
-    use crate::types::DataType;
 
     fn sample_schema() -> Vec<(String, DataType)> {
         vec![

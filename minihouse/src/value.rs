@@ -1,4 +1,4 @@
-use crate::types::DataType;
+use crate::DataType;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -19,7 +19,7 @@ impl Value {
 
 #[cfg(test)]
 mod tests {
-    use crate::types::DataType;
+    use crate::DataType;
     use crate::value::Value;
 
     #[test]
