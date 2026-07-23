@@ -1,4 +1,4 @@
-use crate::aggregate_factory::{AggKind, make_aggregate};
+use crate::aggregate::{AggKind, make_aggregate};
 use crate::query::{CmpOp, eval_predicate};
 use crate::table::Table;
 use crate::value::Value;

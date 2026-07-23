@@ -1,7 +1,6 @@
 #![warn(clippy::all)]
 
 pub mod aggregate;
-pub mod aggregate_factory;
 pub mod block;
 pub mod column;
 pub mod execute;

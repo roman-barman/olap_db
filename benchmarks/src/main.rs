@@ -2,12 +2,12 @@
 
 use crate::data_generator::generate;
 use crate::rowstore::{RowTable, count_where_ts_gt, sum_dur_where_ts_gt};
-use minihouse::aggregate_factory::AggKind;
 use minihouse::execute::{SimpleQuery, execute};
 use minihouse::query::CmpOp;
 use minihouse::table::Table;
 use minihouse::value::Value;
 use std::time::{Duration, Instant};
+use minihouse::aggregate::AggKind;
 
 mod data_generator;
 mod rowstore;
