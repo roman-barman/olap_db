@@ -3,7 +3,6 @@
 pub mod aggregate;
 pub mod block;
 pub mod column;
-pub mod execute;
 pub mod helpers;
 pub mod query;
 pub mod table;
