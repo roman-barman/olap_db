@@ -8,7 +8,7 @@ pub enum Value {
 }
 
 impl Value {
-    pub fn data_type(&self) -> DataType {
+    pub(crate) fn data_type(&self) -> DataType {
         match self {
             Value::Int64(_) => DataType::Int64,
             Value::Float64(_) => DataType::Float64,

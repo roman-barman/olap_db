@@ -32,7 +32,7 @@ impl Column {
         self.len() == 0
     }
 
-    pub fn data_type(&self) -> DataType {
+    pub(crate) fn data_type(&self) -> DataType {
         match self {
             Column::Int64(_) => DataType::Int64,
             Column::Float64(_) => DataType::Float64,
@@ -59,7 +59,7 @@ impl Column {
         }
     }
 
-    pub fn filter(&self, mask: &[bool]) -> Column {
+    pub(crate) fn filter(&self, mask: &[bool]) -> Column {
         assert_eq!(
             mask.len(),
             self.len(),

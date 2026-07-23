@@ -23,15 +23,15 @@ impl Block {
         Self { columns, num_rows }
     }
 
-    pub fn num_rows(&self) -> usize {
+    pub(crate) fn num_rows(&self) -> usize {
         self.num_rows
     }
 
-    pub fn column(&self, name: &str) -> Option<&Column> {
+    pub(crate) fn column(&self, name: &str) -> Option<&Column> {
         self.columns.iter().find(|(n, _)| n == name).map(|(_, c)| c)
     }
 
-    pub fn filter(&self, mask: &[bool]) -> Block {
+    pub(crate) fn filter(&self, mask: &[bool]) -> Block {
         assert_eq!(
             mask.len(),
             self.num_rows,
@@ -61,7 +61,7 @@ impl Block {
         Self::new(new_columns, num_rows)
     }
 
-    pub fn columns(&self) -> &[(String, Column)] {
+    pub(crate) fn columns(&self) -> &[(String, Column)] {
         &self.columns
     }
 }

@@ -41,11 +41,11 @@ impl Table {
         self.blocks.push(block);
     }
 
-    pub fn scan(&self) -> impl Iterator<Item = &Block> {
+    pub(crate) fn scan(&self) -> impl Iterator<Item = &Block> {
         self.blocks.iter()
     }
 
-    pub fn schema(&self) -> &[(String, DataType)] {
+    pub(crate) fn schema(&self) -> &[(String, DataType)] {
         &self.schema
     }
 }

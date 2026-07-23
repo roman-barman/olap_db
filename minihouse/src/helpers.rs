@@ -1,4 +1,4 @@
-pub fn assert_unique_names<T>(items: &[(String, T)]) {
+pub(crate) fn assert_unique_names<T>(items: &[(String, T)]) {
     for i in 1..items.len() {
         let (name, _) = &items[i];
         assert!(
