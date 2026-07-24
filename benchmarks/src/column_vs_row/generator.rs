@@ -1,4 +1,4 @@
-use crate::rowstore::{Row, RowTable};
+use crate::column_vs_row::row_table::{Row, RowTable};
 use minihouse::Block;
 use minihouse::Column;
 use minihouse::DataType;
@@ -6,7 +6,7 @@ use minihouse::Table;
 use rand::prelude::StdRng;
 use rand::{RngExt, SeedableRng};
 
-pub fn generate(n: usize, block_size: usize) -> (Table, RowTable) {
+pub(super) fn generate(n: usize, block_size: usize) -> (Table, RowTable) {
     let mut rng = StdRng::seed_from_u64(42);
 
     let mut row_table = RowTable {
