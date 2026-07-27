@@ -5,6 +5,7 @@ mod block;
 mod column;
 mod helpers;
 pub mod query;
+mod string_column;
 mod table;
 mod value;
 
