@@ -1,9 +1,11 @@
+use crate::bench;
 use crate::column_vs_row::generator::generate;
-use crate::column_vs_row::row_table::{RowTable, count_where_ts_gt, sum_dur, sum_dur_where_ts_gt};
+use crate::column_vs_row::row_table::{
+    RowTable, count_where_ts_gt, count_where_url_eq, sum_dur, sum_dur_where_ts_gt,
+};
 use minihouse::aggregate::AggKind;
 use minihouse::query::{CmpOp, SimpleQuery};
 use minihouse::{Table, Value};
-use std::time::{Duration, Instant};
 
 mod generator;
 mod row_table;
@@ -13,6 +15,7 @@ pub(super) fn execute() {
     sum_bench(&col_table, &row_table);
     without_filter_bench(&col_table, &row_table);
     count_bench(&col_table, &row_table);
+    count_string_bench(&col_table, &row_table)
 }
 
 fn sum_bench(col_table: &Table, row_table: &RowTable) {
@@ -34,7 +37,7 @@ fn sum_bench(col_table: &Table, row_table: &RowTable) {
     println!();
 
     for (label, threshold) in [("~1%", 990_000), ("~50%", 500_000), ("~99%", 10_000)] {
-        check_bench_result(
+        bench_pair(
             label,
             col_table,
             row_table,
@@ -58,7 +61,7 @@ fn without_filter_bench(col_table: &Table, row_table: &RowTable) {
     });
     println!();
 
-    check_bench_result(
+    bench_pair(
         "without filter",
         col_table,
         row_table,
@@ -89,7 +92,7 @@ fn count_bench(col_table: &Table, row_table: &RowTable) {
     println!();
 
     for (label, threshold) in [("~1%", 990_000), ("~50%", 500_000), ("~99%", 10_000)] {
-        check_bench_result(
+        bench_pair(
             label,
             col_table,
             row_table,
@@ -103,7 +106,38 @@ fn count_bench(col_table: &Table, row_table: &RowTable) {
     println!();
 }
 
-fn check_bench_result<F>(
+fn count_string_bench(col_table: &Table, row_table: &RowTable) {
+    println!("count string bench");
+    println!();
+
+    let value = "/page/42";
+
+    println!("run cross-check");
+    crosscheck(
+        col_table,
+        row_table,
+        &count_where_url_eq_query(value),
+        |table| count_where_url_eq(table, value),
+    );
+    println!();
+
+    println!("run benchmark");
+    println!();
+
+    bench_pair(
+        "count string",
+        col_table,
+        row_table,
+        &count_where_url_eq_query(value),
+        |table| count_where_url_eq(table, value),
+    );
+    println!();
+
+    println!("--------------------");
+    println!();
+}
+
+fn bench_pair<F>(
     label: &str,
     col_table: &Table,
     row_table: &RowTable,
@@ -134,6 +168,13 @@ fn count_id_where_ts_gt_query(x: i64) -> SimpleQuery<'static> {
     }
 }
 
+fn count_where_url_eq_query(url: &str) -> SimpleQuery<'static> {
+    SimpleQuery {
+        filter: Some(("url", CmpOp::Eq, Value::String(url.to_string()))),
+        aggregate: ("id", AggKind::Count),
+    }
+}
+
 fn sum_dur_query() -> SimpleQuery<'static> {
     SimpleQuery {
         filter: None,
@@ -153,19 +194,4 @@ where
         "engines disagree at"
     );
     println!("cross-check passed")
-}
-
-fn bench<F: Fn() -> R, R>(name: &str, runs: usize, f: F) -> Duration {
-    let mut times: Vec<Duration> = (0..runs + 1)
-        .map(|_| {
-            let t = Instant::now();
-            std::hint::black_box(f());
-            t.elapsed()
-        })
-        .skip(1)
-        .collect();
-    times.sort();
-    let median = times[times.len() / 2];
-    println!("{name}: median {median:?} over {runs} runs");
-    median
 }

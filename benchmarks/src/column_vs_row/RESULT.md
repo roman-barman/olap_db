@@ -174,3 +174,73 @@ iteration: **the executor must process only the data that is consumed
 downstream** — projection pushdown delivered up to 13x and will continue on
 disk (iteration 2: don't read unneeded files) and in the index
 (iteration 4: don't read unneeded granules).
+
+# Benchmark: Iteration 2, subtask 2.0 — string filter BEFORE migration
+
+> Baseline for measuring the effect of migrating the string column
+> from `Vec<String>` to `data: Vec<u8> + offsets: Vec<u32>`.
+> Recorded **before** the cascade: the column still stores `Vec<String>`.
+
+## Environment
+
+| Parameter | Value |
+|---|---|
+| Date | 2026-07-29 |
+| CPU / RAM | Intel Core i7-1255U (2P+8E, 12 threads) / 16 GB |
+| Method | median of 7 runs, first run discarded (warm-up), `black_box` |
+
+Dataset and contender unchanged (10M rows, seed 42, 8,192-row blocks,
+naive `Vec<Row>`). Cross-check passed ✅
+
+## Query
+
+`count() WHERE url == "/page/42"`
+
+- Selectivity ~0.1%: urls are uniform over one thousand values → ~10K matches
+- After projection pushdown, materialization is negligible (count over ~10K
+  rows of the id column) — the measurement consists almost entirely of
+  `eval_predicate` over `url`: 10M string-vs-constant comparisons.
+  We measure exactly what we are about to migrate.
+
+## Result
+
+| Query | Columnar | Row-based | Ratio (row/col) |
+|---|---|---|---|
+| `count WHERE url == "/page/42"` | 50.2 ms | 54.8 ms | **1.1x** |
+
+## Interpretation
+
+1. **A string predicate is ~7x more expensive than a numeric one.**
+   A mask over a numeric column (`ts > X`) is estimated at ~7 ms — from the
+   project's reference number in the no-filter run (an 80 MB pass at
+   ~11.7 GB/s); the string predicate over `url` costs 50 ms for the same
+   number of rows. The tax is twofold: dereferencing the `String` pointer
+   (a random jump into the heap → a cache miss per row) plus a
+   variable-length memcmp instead of a single SIMD compare instruction.
+
+2. **A ratio of only 1.1x — columnar in form only.** The `String` structs
+   in `Vec<String>` are laid out contiguously, but the *string bytes* are
+   scattered across the heap just like the row-based contender's. The main
+   advantage of columns — dense data layout — does not apply to the string
+   column in its current representation. That is exactly what the
+   `data + offsets` migration fixes.
+
+## Post-migration forecast
+
+- A pass over a contiguous buffer: ~140 MB of data + 40 MB of offsets,
+  sequential reads, the prefetcher does its job.
+- The `bytes_at` bonus: early rejection by length
+  (`end - start != x.len()`) before touching the bytes; urls are 7–10
+  characters long → a noticeable share of candidates is discarded
+  without a memcmp.
+- **Prediction: 12–25 ms (2–4x off the current 50 ms).** The row engine
+  does not change → the ratio should grow to ~2.5–4x.
+
+## Estimation method (back-of-the-envelope)
+
+The project's reference number: memory bandwidth of ~11.7 GB/s (from the
+no-filter run). Any pipeline stage is estimated as "bytes read/written ÷
+memory bandwidth", since analytical workloads are memory-bound.
+An estimate-vs-fact gap of several times is not an estimation error but a
+finding: here it pointed at random heap access in `Vec<String>`, where the
+sequential-read yardstick does not apply.

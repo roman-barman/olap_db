@@ -20,3 +20,7 @@ pub(super) fn count_where_ts_gt(t: &RowTable, x: i64) -> i64 {
 pub(super) fn sum_dur(t: &RowTable) -> i64 {
     t.rows.iter().map(|r| r.dur).sum::<i64>()
 }
+
+pub fn count_where_url_eq(t: &RowTable, url: &str) -> i64 {
+    t.rows.iter().filter(|r| r.url == url).count() as i64
+}
