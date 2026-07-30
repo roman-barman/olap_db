@@ -54,8 +54,8 @@ impl Block {
 
         let mut new_columns = Vec::with_capacity(self.columns.len());
         for (name, column) in &self.columns {
+            // TODO: Block → Column → StringColumn»
             let new_column = column.filter(mask);
-            // TODO: mask counted once per column, hoist
             new_columns.push((name.clone(), new_column));
         }
         Self::new(new_columns, num_rows)
@@ -69,13 +69,22 @@ impl Block {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::string_column::StringColumn;
+
+    fn string_column(values: &[&str]) -> StringColumn {
+        let mut col = StringColumn::new();
+        for v in values {
+            col.push(v);
+        }
+        col
+    }
 
     fn sample_columns() -> Vec<(String, Column)> {
         vec![
             ("id".to_string(), Column::Int64(vec![1, 2, 3])),
             (
                 "name".to_string(),
-                Column::String(vec!["a".into(), "b".into(), "c".into()]),
+                Column::String(string_column(&["a", "b", "c"])),
             ),
             ("score".to_string(), Column::Float64(vec![1.5, 2.5, 3.5])),
         ]
@@ -88,7 +97,7 @@ mod tests {
         assert_eq!(block.column("id"), Some(&Column::Int64(vec![1, 2, 3])));
         assert_eq!(
             block.column("name"),
-            Some(&Column::String(vec!["a".into(), "b".into(), "c".into()]))
+            Some(&Column::String(string_column(&["a", "b", "c"])))
         );
         assert_eq!(
             block.column("score"),
@@ -208,7 +217,10 @@ mod tests {
         let filtered = block.filter(&[false, false, false]);
         assert_eq!(filtered.num_rows(), 0);
         assert_eq!(filtered.column("id"), Some(&Column::Int64(vec![])));
-        assert_eq!(filtered.column("name"), Some(&Column::String(vec![])));
+        assert_eq!(
+            filtered.column("name"),
+            Some(&Column::String(StringColumn::new()))
+        );
         assert_eq!(filtered.column("score"), Some(&Column::Float64(vec![])));
     }
 
@@ -220,7 +232,7 @@ mod tests {
         assert_eq!(filtered.column("id"), Some(&Column::Int64(vec![1, 3])));
         assert_eq!(
             filtered.column("name"),
-            Some(&Column::String(vec!["a".into(), "c".into()]))
+            Some(&Column::String(string_column(&["a", "c"])))
         );
         assert_eq!(
             filtered.column("score"),
@@ -245,7 +257,7 @@ mod tests {
         assert_eq!(block.column("id"), Some(&Column::Int64(vec![1, 2, 3])));
         assert_eq!(
             block.column("name"),
-            Some(&Column::String(vec!["a".into(), "b".into(), "c".into()]))
+            Some(&Column::String(string_column(&["a", "b", "c"])))
         );
     }
 

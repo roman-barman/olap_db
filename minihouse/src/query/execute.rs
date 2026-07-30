@@ -74,7 +74,10 @@ fn eval_predicate(col: &Column, op: CmpOp, value: &Value) -> Vec<bool> {
             CmpOp::Eq => cmp_loop(v, |a| a == x),
         },
         (Column::String(v), Value::String(x)) => match op {
-            CmpOp::Eq => cmp_loop(v, |a| a == x),
+            CmpOp::Eq => {
+                let x_bytes = x.as_bytes();
+                (0..v.len()).map(|i| v.bytes_at(i) == x_bytes).collect()
+            }
             _ => unreachable!("Unsupported comparison {op:?} for string values"),
         },
         _ => unreachable!(
@@ -99,6 +102,15 @@ mod tests {
     use crate::aggregate::AggKind;
     use crate::block::Block;
     use crate::column::Column;
+    use crate::string_column::StringColumn;
+
+    fn string_column(values: &[&str]) -> StringColumn {
+        let mut col = StringColumn::new();
+        for v in values {
+            col.push(v);
+        }
+        col
+    }
 
     fn sample_schema() -> Vec<(String, DataType)> {
         vec![
@@ -113,10 +125,7 @@ mod tests {
         Block::new(
             vec![
                 ("id".to_string(), Column::Int64(ids)),
-                (
-                    "name".to_string(),
-                    Column::String(names.into_iter().map(String::from).collect()),
-                ),
+                ("name".to_string(), Column::String(string_column(&names))),
                 ("score".to_string(), Column::Float64(scores)),
             ],
             n,
@@ -478,7 +487,7 @@ mod tests {
 
     #[test]
     fn eval_predicate_string_eq_returns_matching_mask() {
-        let col = Column::String(vec!["a".into(), "b".into(), "a".into()]);
+        let col = Column::String(string_column(&["a", "b", "a"]));
         let mask = eval_predicate(&col, CmpOp::Eq, &Value::String("a".into()));
         assert_eq!(mask, vec![true, false, true]);
     }
@@ -486,14 +495,14 @@ mod tests {
     #[test]
     #[should_panic(expected = "Unsupported comparison")]
     fn eval_predicate_string_gt_panics() {
-        let col = Column::String(vec!["a".into()]);
+        let col = Column::String(string_column(&["a"]));
         eval_predicate(&col, CmpOp::Gt, &Value::String("a".into()));
     }
 
     #[test]
     #[should_panic(expected = "Unsupported comparison")]
     fn eval_predicate_string_lt_panics() {
-        let col = Column::String(vec!["a".into()]);
+        let col = Column::String(string_column(&["a"]));
         eval_predicate(&col, CmpOp::Lt, &Value::String("a".into()));
     }
 
@@ -514,7 +523,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "do not match")]
     fn eval_predicate_string_column_int64_value_panics() {
-        let col = Column::String(vec!["a".into()]);
+        let col = Column::String(string_column(&["a"]));
         eval_predicate(&col, CmpOp::Eq, &Value::Int64(1));
     }
 

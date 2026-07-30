@@ -1,10 +1,18 @@
 use crate::DataType;
+use crate::string_column::StringColumn;
+
+/// Heuristics for pre-allocating a string column's data buffer when
+/// the exact byte count is unknown (Column::with_capacity only knows rows).
+/// An overshoot in either direction is harmless: less means reallocations, more means extra
+/// memory before shrink; correctness is not affected. The exact bytes are passed by
+/// PartReader via StringColumn::with_capacity(rows, bytes).
+const ESTIMATED_AVG_STR_LEN: usize = 16;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Column {
     Int64(Vec<i64>),
     Float64(Vec<f64>),
-    String(Vec<String>),
+    String(StringColumn),
 }
 
 impl Column {
@@ -16,7 +24,10 @@ impl Column {
         match dt {
             DataType::Int64 => Column::Int64(Vec::with_capacity(cap)),
             DataType::Float64 => Column::Float64(Vec::with_capacity(cap)),
-            DataType::String => Column::String(Vec::with_capacity(cap)),
+            DataType::String => Column::String(StringColumn::with_capacity(
+                cap,
+                cap * ESTIMATED_AVG_STR_LEN,
+            )),
         }
     }
 
@@ -54,7 +65,7 @@ impl Column {
     }
     pub fn push_str(&mut self, value: &str) {
         match self {
-            Column::String(v) => v.push(value.to_string()),
+            Column::String(v) => v.push(value),
             _ => panic!("push_str on {:?} column", self.data_type()),
         }
     }
@@ -77,7 +88,7 @@ impl Column {
         match self {
             Column::Int64(v) => Column::Int64(filter_slice(v, mask, cap)),
             Column::Float64(v) => Column::Float64(filter_slice(v, mask, cap)),
-            Column::String(v) => Column::String(filter_slice(v, mask, cap)),
+            Column::String(v) => Column::String(v.filter(mask)),
         }
     }
 }
@@ -95,6 +106,14 @@ fn filter_slice<T: Clone>(v: &[T], mask: &[bool], cap: usize) -> Vec<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn string_column(values: &[&str]) -> StringColumn {
+        let mut col = StringColumn::new();
+        for v in values {
+            col.push(v);
+        }
+        col
+    }
 
     #[test]
     fn new_and_with_capacity() {
@@ -119,7 +138,10 @@ mod tests {
     fn data_type_per_variant() {
         assert_eq!(Column::Int64(vec![]).data_type(), DataType::Int64);
         assert_eq!(Column::Float64(vec![]).data_type(), DataType::Float64);
-        assert_eq!(Column::String(vec![]).data_type(), DataType::String);
+        assert_eq!(
+            Column::String(StringColumn::new()).data_type(),
+            DataType::String
+        );
 
         let mut c = Column::new(DataType::Int64);
         c.push_i64(1);
@@ -162,14 +184,7 @@ mod tests {
         c.push_str(&borrowed);
         c.push_str("");
         c.push_str("world");
-        assert_eq!(
-            c,
-            Column::String(vec![
-                "hello".to_string(),
-                "".to_string(),
-                "world".to_string()
-            ])
-        );
+        assert_eq!(c, Column::String(string_column(&["hello", "", "world"])));
     }
 
     #[test]
@@ -224,12 +239,9 @@ mod tests {
 
     #[test]
     fn filter_keeps_masked_in_elements_in_order_string() {
-        let c = Column::String(vec!["a".into(), "b".into(), "c".into()]);
+        let c = Column::String(string_column(&["a", "b", "c"]));
         let mask = [true, false, true];
-        assert_eq!(
-            c.filter(&mask),
-            Column::String(vec!["a".into(), "c".into()])
-        );
+        assert_eq!(c.filter(&mask), Column::String(string_column(&["a", "c"])));
     }
 
     #[test]

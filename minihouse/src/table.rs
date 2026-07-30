@@ -54,6 +54,15 @@ impl Table {
 mod tests {
     use super::*;
     use crate::column::Column;
+    use crate::string_column::StringColumn;
+
+    fn string_column(values: &[&str]) -> StringColumn {
+        let mut col = StringColumn::new();
+        for v in values {
+            col.push(v);
+        }
+        col
+    }
 
     fn sample_schema() -> Vec<(String, DataType)> {
         vec![
@@ -68,10 +77,7 @@ mod tests {
         Block::new(
             vec![
                 ("id".to_string(), Column::Int64(ids)),
-                (
-                    "name".to_string(),
-                    Column::String(names.into_iter().map(String::from).collect()),
-                ),
+                ("name".to_string(), Column::String(string_column(&names))),
                 ("score".to_string(), Column::Float64(scores)),
             ],
             n,
@@ -133,7 +139,7 @@ mod tests {
         assert_eq!(blocks[0].column("id"), Some(&Column::Int64(vec![1, 2, 3])));
         assert_eq!(
             blocks[0].column("name"),
-            Some(&Column::String(vec!["a".into(), "b".into(), "c".into()]))
+            Some(&Column::String(string_column(&["a", "b", "c"])))
         );
         assert_eq!(
             blocks[0].column("score"),
@@ -167,7 +173,7 @@ mod tests {
         let block = Block::new(
             vec![
                 ("id".to_string(), Column::Int64(vec![1])),
-                ("name".to_string(), Column::String(vec!["a".into()])),
+                ("name".to_string(), Column::String(string_column(&["a"]))),
             ],
             1,
         );
@@ -184,7 +190,7 @@ mod tests {
         let block = Block::new(
             vec![
                 ("id".to_string(), Column::Int64(vec![1])),
-                ("name".to_string(), Column::String(vec!["a".into()])),
+                ("name".to_string(), Column::String(string_column(&["a"]))),
                 ("extra".to_string(), Column::Float64(vec![1.0])),
             ],
             1,
@@ -199,7 +205,7 @@ mod tests {
         let block = Block::new(
             vec![
                 ("wrong".to_string(), Column::Int64(vec![1])),
-                ("name".to_string(), Column::String(vec!["a".into()])),
+                ("name".to_string(), Column::String(string_column(&["a"]))),
                 ("score".to_string(), Column::Float64(vec![1.0])),
             ],
             1,
@@ -214,7 +220,7 @@ mod tests {
         let block = Block::new(
             vec![
                 ("id".to_string(), Column::Int64(vec![1])),
-                ("name".to_string(), Column::String(vec!["a".into()])),
+                ("name".to_string(), Column::String(string_column(&["a"]))),
                 ("bad".to_string(), Column::Float64(vec![1.0])),
             ],
             1,
@@ -229,7 +235,7 @@ mod tests {
         let block = Block::new(
             vec![
                 ("id".to_string(), Column::Float64(vec![1.0])),
-                ("name".to_string(), Column::String(vec!["a".into()])),
+                ("name".to_string(), Column::String(string_column(&["a"]))),
                 ("score".to_string(), Column::Float64(vec![1.0])),
             ],
             1,
@@ -243,7 +249,7 @@ mod tests {
         let empty_block = Block::new(
             vec![
                 ("id".to_string(), Column::Int64(vec![])),
-                ("name".to_string(), Column::String(vec![])),
+                ("name".to_string(), Column::String(StringColumn::new())),
                 ("score".to_string(), Column::Float64(vec![])),
             ],
             0,
@@ -260,7 +266,7 @@ mod tests {
         let empty_block = Block::new(
             vec![
                 ("id".to_string(), Column::Int64(vec![])),
-                ("name".to_string(), Column::String(vec![])),
+                ("name".to_string(), Column::String(StringColumn::new())),
                 ("score".to_string(), Column::Float64(vec![])),
             ],
             0,
@@ -280,7 +286,7 @@ mod tests {
         let mut table = Table::new(sample_schema());
         let block = Block::new(
             vec![
-                ("name".to_string(), Column::String(vec!["a".into()])),
+                ("name".to_string(), Column::String(string_column(&["a"]))),
                 ("id".to_string(), Column::Int64(vec![1])),
                 ("score".to_string(), Column::Float64(vec![1.0])),
             ],

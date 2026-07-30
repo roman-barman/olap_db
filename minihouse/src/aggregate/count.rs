@@ -23,6 +23,15 @@ impl Aggregate for Count {
 mod tests {
     use super::*;
     use crate::DataType;
+    use crate::string_column::StringColumn;
+
+    fn string_column(values: &[&str]) -> StringColumn {
+        let mut col = StringColumn::new();
+        for v in values {
+            col.push(v);
+        }
+        col
+    }
 
     #[test]
     fn count_default_result_is_zero() {
@@ -47,12 +56,7 @@ mod tests {
     #[test]
     fn count_update_string_column_adds_len() {
         let mut count = Count::default();
-        count.update(&Column::String(vec![
-            "a".into(),
-            "b".into(),
-            "c".into(),
-            "d".into(),
-        ]));
+        count.update(&Column::String(string_column(&["a", "b", "c", "d"])));
         assert_eq!(count.result(), Some(Value::Int64(4)));
     }
 

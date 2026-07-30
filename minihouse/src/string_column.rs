@@ -12,6 +12,16 @@ impl StringColumn {
         }
     }
 
+    pub(crate) fn with_capacity(capacity: usize, bytes: usize) -> Self {
+        let mut offset = Vec::with_capacity(capacity + 1);
+        offset.push(0);
+
+        Self {
+            data: Vec::with_capacity(bytes),
+            offsets: offset,
+        }
+    }
+
     pub(crate) fn len(&self) -> usize {
         self.offsets.len() - 1
     }
@@ -31,6 +41,12 @@ impl StringColumn {
         let start = self.offsets[i] as usize;
         let end = self.offsets[i + 1] as usize;
         std::str::from_utf8(&self.data[start..end]).expect("invalid UTF-8 sequence")
+    }
+
+    pub(crate) fn bytes_at(&self, i: usize) -> &[u8] {
+        let start = self.offsets[i] as usize;
+        let end = self.offsets[i + 1] as usize;
+        &self.data[start..end]
     }
 
     pub(crate) fn filter(&self, mask: &[bool]) -> StringColumn {
@@ -268,5 +284,74 @@ mod tests {
         assert_eq!(cloned.len(), 3);
         assert_eq!(original.get(0), "a");
         assert_eq!(original.get(1), "b");
+    }
+
+    #[test]
+    fn with_capacity_reserves_capacity() {
+        let col = StringColumn::with_capacity(4, 32);
+        assert!(col.offsets.capacity() >= 5);
+        assert!(col.data.capacity() >= 32);
+        assert_eq!(col.len(), 0);
+        assert!(col.is_empty());
+    }
+
+    #[test]
+    fn with_capacity_zero_then_push_behaves_like_new() {
+        let mut with_cap = StringColumn::with_capacity(0, 0);
+        with_cap.push("a");
+        with_cap.push("b");
+
+        let mut new_col = StringColumn::new();
+        new_col.push("a");
+        new_col.push("b");
+
+        assert_eq!(with_cap, new_col);
+    }
+
+    #[test]
+    fn bytes_at_returns_same_bytes_as_get() {
+        let mut col = StringColumn::new();
+        col.push("hello");
+        col.push("café");
+        col.push("日本語");
+
+        for i in 0..col.len() {
+            assert_eq!(col.bytes_at(i), col.get(i).as_bytes());
+        }
+    }
+
+    #[test]
+    fn bytes_at_empty_string() {
+        let mut col = StringColumn::new();
+        col.push("before");
+        col.push("");
+        col.push("after");
+
+        assert_eq!(col.bytes_at(1), b"".as_slice());
+    }
+
+    #[test]
+    fn bytes_at_first_and_last_index() {
+        let mut col = StringColumn::new();
+        col.push("first");
+        col.push("middle");
+        col.push("last");
+
+        assert_eq!(col.bytes_at(0), b"first".as_slice());
+        assert_eq!(col.bytes_at(col.len() - 1), b"last".as_slice());
+    }
+
+    #[test]
+    fn bytes_at_after_filter() {
+        let mut col = StringColumn::new();
+        col.push("a");
+        col.push("b");
+        col.push("c");
+        col.push("d");
+
+        let result = col.filter(&[true, false, true, false]);
+
+        assert_eq!(result.bytes_at(0), b"a".as_slice());
+        assert_eq!(result.bytes_at(1), b"c".as_slice());
     }
 }
