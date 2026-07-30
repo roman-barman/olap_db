@@ -244,3 +244,88 @@ memory bandwidth", since analytical workloads are memory-bound.
 An estimate-vs-fact gap of several times is not an estimation error but a
 finding: here it pointed at random heap access in `Vec<String>`, where the
 sequential-read yardstick does not apply.
+
+# Benchmark: Iteration 2, subtask 2.0 — string filter AFTER migration
+
+> Companion to `benchmark-2-0-string-before-en.md`. The string column now
+> stores `data: Vec<u8> + offsets: Vec<u32>`; the predicate compares byte
+> slices via `bytes_at` (no UTF-8 validation, no per-row allocations).
+> Cross-check passed before and after ✅ — the migration is correct.
+
+## Environment
+
+| Parameter | Value |
+|---|---|
+| Date | 2026-07-30 |
+| CPU / RAM | Intel Core i7-1255U (2P+8E, 12 threads) / 16 GB |
+| Method | median of 7 runs, first run discarded (warm-up), `black_box` |
+
+## Result
+
+`count() WHERE url == "/page/42"` (selectivity ~0.1%)
+
+| Stage | Before | After | Change |
+|---|---|---|---|
+| Full query (columnar) | 50.2 ms | 48.4 ms | **−4%** |
+| Row-based contender | 54.8 ms | 54.9 ms | unchanged |
+| Ratio (row/col) | 1.1x | 1.1x | unchanged |
+
+Isolated measurement (new): **mask only (`eval_predicate` over url) = 38.2 ms**,
+i.e. 79% of the query. The remaining ~10 ms: filtering the 80 MB id column
+by mask (~7–8 ms) + cap counting + count itself.
+
+## Forecast check — a miss, and why
+
+Forecast: 12–25 ms (2–4x speedup). Actual: 48.4 ms (−4%). A miss by an
+order of magnitude in effect size — which means the mental model was wrong.
+The post-mortem:
+
+1. **The task was never memory-bound.** 38.2 ms / 10M rows = 3.8 ns ≈ 17–18
+   CPU cycles per row, while reading the ~18 bytes/row of data + offsets at
+   the reference 11.7 GB/s costs ~1.5 ns. The bottleneck is per-row
+   *processing*, not data layout — and the migration changes layout only.
+
+2. **Why "before" wasn't as bad as theorized.** The cache-miss horror story
+   assumed `String` bytes scattered across the heap. In reality the benchmark
+   pushes 10M small strings back-to-back in a fresh process — the allocator
+   places them nearly sequentially, and the prefetcher forgives the walk.
+   The theory of random heap access was correct in general and inapplicable
+   to this allocation pattern. **Lesson: memory predictions must be checked
+   against the actual allocation pattern, not the worst case.**
+
+3. **Where the 17–18 cycles go** (per row): two offsets loads with bounds
+   checks, slice construction with a range check, then `&[u8] == &[u8]` —
+   which compares lengths first. Url lengths are 7–10 bytes and the constant
+   is 8, so the length test passes for ~10% of rows: an unpredictable branch
+   (~10/90) costing 15–20 cycles per miss, then an 8-byte memcmp for the
+   survivors. The "free early rejection by length" from the forecast is, on
+   this data, an unpredictable branch per row — the opposite of free.
+
+## What the migration did buy
+
+- The on-disk format prerequisite: `data + offsets` serializes as two flat
+  dumps (`url.data.bin`, `url.offsets.bin`) — the actual goal of 2.0.
+- `filter` without per-row allocations (byte-range copies), `push_str`
+  without allocation.
+- Predicate is now compute-bound with dense data — the correct starting
+  point for vectorized string operations later.
+
+## Optimization backlog (updated)
+
+- **Vectorized length pre-pass for string equality**: first pass compares
+  lengths as numbers over the offsets column (`offsets[i+1] - offsets[i] == k`
+  — pure SIMD-friendly arithmetic), second pass memcmps only the ~10% that
+  survive. Turns the unpredictable per-row branch into a dense numeric scan.
+  This is how mature engines build string ops from columnar primitives.
+- **Aggregate pushdown for count** (from iteration 1 backlog) — now priced:
+  ~8 ms of this query (filtering 80 MB of id to take its length).
+- Branch-free filtering, mask fast paths on sorted data — unchanged.
+
+## Verdict
+
+The migration is a **format win, not a speed win** — and that is fine:
+2.0 was a prerequisite for disk (iteration 2), not an optimization. The
+measured story (forecast 12–25 ms → fact 48.4 ms → dissection → diagnosis)
+is kept as documentation of how to respond to a model miss: isolate, count
+cycles, name the lesson. Next: 2.1, the block codec — writing bytes to disk,
+which is what `data + offsets` was for.
