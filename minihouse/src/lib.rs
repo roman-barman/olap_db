@@ -2,6 +2,7 @@
 
 pub mod aggregate;
 mod block;
+mod codec;
 mod column;
 mod helpers;
 pub mod query;
