@@ -22,6 +22,25 @@ impl StringColumn {
         }
     }
 
+    pub(crate) fn try_from_parts(data: Vec<u8>, offsets: Vec<u32>) -> Result<Self, String> {
+        if offsets.is_empty() {
+            return Err("offsets must not be empty".into());
+        }
+        if offsets[0] != 0 {
+            return Err(format!("offsets must start with 0, got {}", offsets[0]));
+        }
+        for w in offsets.windows(2) {
+            if w[0] > w[1] {
+                return Err(format!("offsets not monotonic: {} > {}", w[0], w[1]));
+            }
+        }
+        let last = *offsets.last().unwrap() as usize;
+        if last != data.len() {
+            return Err(format!("last offset {last} != data length {}", data.len()));
+        }
+        Ok(Self { data, offsets })
+    }
+
     pub(crate) fn len(&self) -> usize {
         self.offsets.len() - 1
     }
@@ -89,6 +108,18 @@ impl StringColumn {
         }
 
         result
+    }
+
+    pub(crate) fn data_len(&self) -> usize {
+        self.data.len()
+    }
+
+    pub(crate) fn data(&self) -> &[u8] {
+        &self.data
+    }
+
+    pub(crate) fn offsets(&self) -> &[u32] {
+        &self.offsets
     }
 }
 
@@ -353,5 +384,164 @@ mod tests {
 
         assert_eq!(result.bytes_at(0), b"a".as_slice());
         assert_eq!(result.bytes_at(1), b"c".as_slice());
+    }
+
+    #[test]
+    fn try_from_parts_accepts_empty_column() {
+        let col = StringColumn::try_from_parts(Vec::new(), vec![0]).unwrap();
+
+        assert_eq!(col.len(), 0);
+        assert!(col.is_empty());
+        assert_eq!(col, StringColumn::new());
+    }
+
+    #[test]
+    fn try_from_parts_single_value() {
+        let col = StringColumn::try_from_parts(b"abc".to_vec(), vec![0, 3]).unwrap();
+
+        assert_eq!(col.len(), 1);
+        assert_eq!(col.get(0), "abc");
+    }
+
+    #[test]
+    fn try_from_parts_multiple_values_in_order() {
+        let col = StringColumn::try_from_parts(b"abcdef".to_vec(), vec![0, 1, 3, 6]).unwrap();
+
+        assert_eq!(col.len(), 3);
+        assert_eq!(col.get(0), "a");
+        assert_eq!(col.get(1), "bc");
+        assert_eq!(col.get(2), "def");
+    }
+
+    #[test]
+    fn try_from_parts_accepts_repeated_offsets_as_empty_strings() {
+        let col = StringColumn::try_from_parts(b"ab".to_vec(), vec![0, 1, 1, 1, 2]).unwrap();
+
+        assert_eq!(col.len(), 4);
+        assert_eq!(col.get(0), "a");
+        assert_eq!(col.get(1), "");
+        assert_eq!(col.get(2), "");
+        assert_eq!(col.get(3), "b");
+    }
+
+    #[test]
+    fn try_from_parts_accepts_all_empty_strings_with_empty_data() {
+        let col = StringColumn::try_from_parts(Vec::new(), vec![0, 0, 0]).unwrap();
+
+        assert_eq!(col.len(), 2);
+        assert_eq!(col.get(0), "");
+        assert_eq!(col.get(1), "");
+    }
+
+    #[test]
+    fn try_from_parts_preserves_multibyte_utf8() {
+        let col =
+            StringColumn::try_from_parts("café日本".as_bytes().to_vec(), vec![0, 5, 11]).unwrap();
+
+        assert_eq!(col.len(), 2);
+        assert_eq!(col.get(0), "café");
+        assert_eq!(col.get(1), "日本");
+    }
+
+    #[test]
+    fn try_from_parts_round_trips_pushed_column() {
+        let mut col = StringColumn::new();
+        col.push("hello");
+        col.push("");
+        col.push("日本語");
+
+        let rebuilt =
+            StringColumn::try_from_parts(col.data().to_vec(), col.offsets().to_vec()).unwrap();
+
+        assert_eq!(rebuilt, col);
+    }
+
+    #[test]
+    fn try_from_parts_round_trips_empty_column() {
+        let col = StringColumn::new();
+
+        let rebuilt =
+            StringColumn::try_from_parts(col.data().to_vec(), col.offsets().to_vec()).unwrap();
+
+        assert_eq!(rebuilt, col);
+    }
+
+    #[test]
+    fn try_from_parts_column_supports_filter_and_bytes_at() {
+        let col = StringColumn::try_from_parts(b"abcd".to_vec(), vec![0, 1, 2, 3, 4]).unwrap();
+
+        let result = col.filter(&[true, false, true, false]);
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result.get(0), "a");
+        assert_eq!(result.get(1), "c");
+        assert_eq!(result.bytes_at(0), b"a".as_slice());
+        assert_eq!(result.bytes_at(1), b"c".as_slice());
+    }
+
+    #[test]
+    fn try_from_parts_column_can_be_pushed_to() {
+        let mut col = StringColumn::try_from_parts(b"abc".to_vec(), vec![0, 1, 3]).unwrap();
+
+        col.push("new");
+
+        assert_eq!(col.len(), 3);
+        assert_eq!(col.get(0), "a");
+        assert_eq!(col.get(1), "bc");
+        assert_eq!(col.get(2), "new");
+    }
+
+    #[test]
+    fn try_from_parts_rejects_empty_offsets() {
+        let err = StringColumn::try_from_parts(Vec::new(), Vec::new()).unwrap_err();
+        assert!(err.contains("offsets must not be empty"));
+    }
+
+    #[test]
+    fn try_from_parts_rejects_offsets_not_starting_at_zero() {
+        let err = StringColumn::try_from_parts(b"abc".to_vec(), vec![1, 3]).unwrap_err();
+        assert!(err.contains("offsets must start with 0, got 1"));
+    }
+
+    #[test]
+    fn try_from_parts_rejects_decreasing_offsets() {
+        let err = StringColumn::try_from_parts(b"abcd".to_vec(), vec![0, 3, 2, 4]).unwrap_err();
+        assert!(err.contains("offsets not monotonic: 3 > 2"));
+    }
+
+    #[test]
+    fn try_from_parts_rejects_last_offset_below_data_len() {
+        let err = StringColumn::try_from_parts(b"abcd".to_vec(), vec![0, 2]).unwrap_err();
+        assert!(err.contains("last offset 2 != data length 4"));
+    }
+
+    #[test]
+    fn try_from_parts_rejects_last_offset_above_data_len() {
+        let err = StringColumn::try_from_parts(b"ab".to_vec(), vec![0, 5]).unwrap_err();
+        assert!(err.contains("last offset 5 != data length 2"));
+    }
+
+    #[test]
+    fn try_from_parts_rejects_nonempty_data_with_only_sentinel_offset() {
+        let err = StringColumn::try_from_parts(b"abc".to_vec(), vec![0]).unwrap_err();
+        assert!(err.contains("last offset 0 != data length 3"));
+    }
+
+    #[test]
+    fn try_from_parts_reports_empty_offsets_before_length_mismatch() {
+        let err = StringColumn::try_from_parts(b"abc".to_vec(), Vec::new()).unwrap_err();
+        assert!(err.contains("offsets must not be empty"));
+    }
+
+    #[test]
+    fn try_from_parts_reports_start_error_before_monotonic_error() {
+        let err = StringColumn::try_from_parts(b"abc".to_vec(), vec![5, 3]).unwrap_err();
+        assert!(err.contains("offsets must start with 0, got 5"));
+    }
+
+    #[test]
+    fn try_from_parts_reports_monotonic_error_before_length_error() {
+        let err = StringColumn::try_from_parts(b"abc".to_vec(), vec![0, 10, 3]).unwrap_err();
+        assert!(err.contains("offsets not monotonic: 10 > 3"));
     }
 }
