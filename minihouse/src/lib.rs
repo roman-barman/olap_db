@@ -4,6 +4,7 @@ pub mod aggregate;
 mod block;
 mod codec;
 mod column;
+mod column_io;
 mod helpers;
 pub mod query;
 mod string_column;
