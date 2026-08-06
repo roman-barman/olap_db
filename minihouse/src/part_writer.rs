@@ -23,6 +23,11 @@ impl PartWriter {
             name.push(".tmp");
             dir.with_file_name(name)
         };
+
+        if tmp_dir.exists() {
+            std::fs::remove_dir_all(&tmp_dir)?;
+        }
+
         std::fs::create_dir_all(&tmp_dir)?;
 
         let writers = schema
@@ -494,8 +499,9 @@ mod tests {
         assert!(!dir.exists());
     }
 
-    /// Documents a leak: there is no `Drop` impl, so an abandoned staging
-    /// directory survives. Update this test if cleanup is added.
+    /// There is no `Drop` impl, so an abandoned staging directory outlives the
+    /// writer. It is not leaked forever: the next `PartWriter::new` for the same
+    /// part reclaims it — see `new_clears_stale_staging_contents`.
     #[test]
     fn dropping_without_finish_leaves_staging_dir_behind() {
         let (_root, dir) = part_dir();
@@ -533,24 +539,63 @@ mod tests {
         assert!(dir.join("schema.txt").is_file());
     }
 
-    /// `create_dir_all` does not clear the staging directory, so leftovers from a
-    /// crashed run are renamed into the finished part. Documents current behavior.
+    /// `new` discards a staging directory left behind by a crashed run, so its
+    /// debris never reaches the finished part.
     #[test]
-    fn stale_staging_contents_survive_into_the_part() {
+    fn new_clears_stale_staging_contents() {
         let (_root, dir) = part_dir();
         let staging = staging_of(&dir);
         fs::create_dir_all(&staging).unwrap();
         fs::write(staging.join("orphan.bin"), b"stale").unwrap();
 
-        PartWriter::new(dir.clone(), &sample_schema())
-            .unwrap()
-            .finish()
-            .unwrap();
+        let writer = PartWriter::new(dir.clone(), &sample_schema()).unwrap();
 
-        assert!(
-            entries(&dir).contains(&"orphan.bin".to_string()),
-            "stale file leaked into the part: {:?}",
-            entries(&dir)
+        assert_eq!(
+            entries(&staging),
+            vec!["id.bin", "name.data.bin", "name.offsets.bin", "score.bin",]
+        );
+
+        writer.finish().unwrap();
+
+        assert_eq!(
+            entries(&dir),
+            vec![
+                "id.bin",
+                "name.data.bin",
+                "name.offsets.bin",
+                "schema.txt",
+                "score.bin",
+            ]
+        );
+    }
+
+    /// Debris that shares a name with a real column file is handled by
+    /// `File::create` truncating rather than appending — a second line of
+    /// defence that holds even without the staging wipe above. Without it, a
+    /// half-written part's offsets would be spliced onto fresh data.
+    #[test]
+    fn new_truncates_stale_files_that_collide_with_column_names() {
+        let (_root, dir) = part_dir();
+        let staging = staging_of(&dir);
+        fs::create_dir_all(&staging).unwrap();
+        fs::write(staging.join("id.bin"), b"garbage-id-bytes").unwrap();
+        fs::write(staging.join("name.data.bin"), b"garbage-data").unwrap();
+        fs::write(staging.join("name.offsets.bin"), b"garbage-offsets").unwrap();
+        fs::write(staging.join("score.bin"), b"garbage-score").unwrap();
+        fs::write(staging.join("schema.txt"), b"version=0\nnum_rows=99\n").unwrap();
+
+        let mut writer = PartWriter::new(dir.clone(), &sample_schema()).unwrap();
+        writer
+            .write_block(&sample_block(&[7], &["x"], &[7.5]))
+            .unwrap();
+        writer.finish().unwrap();
+
+        assert_eq!(i64_chunks(&dir, "id"), vec![vec![7]]);
+        assert_eq!(str_chunks(&dir, "name"), vec![string_column(&["x"])]);
+        assert_eq!(f64_chunks(&dir, "score"), vec![vec![7.5]]);
+        assert_eq!(
+            schema_text(&dir),
+            "version=1\nnum_rows=1\ncolumn=id:Int64\ncolumn=name:String\ncolumn=score:Float64\n"
         );
     }
 
