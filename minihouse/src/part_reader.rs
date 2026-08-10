@@ -1,6 +1,94 @@
 use crate::DataType;
 use crate::codec::CodecError;
-use std::path::PathBuf;
+use std::fs;
+use std::fs::File;
+use std::io::{BufReader, ErrorKind};
+use std::path::{Path, PathBuf};
+
+pub(crate) struct PartReader {
+    schema: Vec<(String, DataType)>,
+    num_rows: usize,
+    rows_read: usize,
+    readers: Vec<(usize, ColumnReaders)>,
+}
+
+enum ColumnReaders {
+    Single(BufReader<File>),
+    Pair {
+        data: BufReader<File>,
+        offsets: BufReader<File>,
+    },
+}
+
+impl PartReader {
+    pub(crate) fn open(dir: &Path, columns: &[&str]) -> Result<PartReader, PartError> {
+        assert!(
+            !columns.is_empty(),
+            "PartReader: empty column projection not supported yet — see backlog (count via mask)"
+        );
+
+        for i in 1..columns.len() {
+            let name = &columns[i];
+            assert!(
+                !columns[..i].iter().any(|n| n == name),
+                "duplicate column name: {name}"
+            );
+        }
+
+        if !dir.is_dir() {
+            return Err(PartError::NotFound(dir.to_path_buf()));
+        }
+
+        let text = match fs::read_to_string(dir.join("schema.txt")) {
+            Ok(text) => text,
+            Err(err) if err.kind() == ErrorKind::NotFound => {
+                return Err(PartError::Corrupt("schema.txt missing".into()));
+            }
+            Err(err) => return Err(err.into()),
+        };
+
+        let (schema, num_rows) = parse_schema(&text)?;
+
+        let mut readers = columns
+            .iter()
+            .map(|name| {
+                let idx = schema
+                    .iter()
+                    .position(|(n, _)| n == name)
+                    .ok_or_else(|| PartError::ColumnNotFound(name.to_string()))?;
+                let reader = match schema[idx].1 {
+                    DataType::Int64 | DataType::Float64 => {
+                        ColumnReaders::Single(open_file(dir, &format!("{name}.bin"))?)
+                    }
+                    DataType::String => ColumnReaders::Pair {
+                        data: open_file(dir, &format!("{name}.data.bin"))?,
+                        offsets: open_file(dir, &format!("{name}.offsets.bin"))?,
+                    },
+                };
+
+                Ok((idx, reader))
+            })
+            .collect::<Result<Vec<_>, PartError>>()?;
+        readers.sort_by_key(|(idx, _)| *idx);
+
+        Ok(PartReader {
+            schema,
+            num_rows,
+            rows_read: 0,
+            readers,
+        })
+    }
+}
+
+fn open_file(dir: &Path, name: &str) -> Result<BufReader<File>, PartError> {
+    match File::open(dir.join(name)) {
+        Ok(file) => Ok(BufReader::new(file)),
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            Err(PartError::Corrupt(format!("column file '{name}' missing")))
+        }
+        Err(err) => Err(err.into()),
+    }
+}
 
 fn parse_schema(text: &str) -> Result<(Vec<(String, DataType)>, usize), PartError> {
     if text.is_empty() {
@@ -85,6 +173,8 @@ pub(crate) enum PartError {
     Codec(#[from] CodecError),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("column '{0}' not found in part schema")]
+    ColumnNotFound(String),
 }
 
 #[cfg(test)]
