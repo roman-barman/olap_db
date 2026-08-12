@@ -180,6 +180,10 @@ pub(crate) enum PartError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::part_writer::PartWriter;
+    use crate::string_column::StringColumn;
+    use crate::{Block, Column};
+    use tempfile::TempDir;
 
     /// Every failure path returns `PartError`; tests assert on the rendered message.
     fn err(text: &str) -> String {
@@ -188,6 +192,96 @@ mod tests {
 
     fn col(name: &str, dt: DataType) -> (String, DataType) {
         (name.to_string(), dt)
+    }
+
+    // ---- `open` fixtures -----------------------------------------------
+
+    /// A temp root plus the part directory inside it. The root must stay alive
+    /// for the whole test — bind it, don't discard it.
+    fn part_dir() -> (TempDir, PathBuf) {
+        let root = TempDir::new().unwrap();
+        let dir = root.path().join("part_0");
+        (root, dir)
+    }
+
+    /// The staging directory `PartWriter` writes into before `finish`.
+    fn staging_of(dir: &Path) -> PathBuf {
+        let mut name = dir.file_name().unwrap().to_os_string();
+        name.push(".tmp");
+        dir.with_file_name(name)
+    }
+
+    /// One column per `DataType`, so every fixture exercises both the single-file
+    /// and the paired-file branch.
+    fn sample_schema() -> Vec<(String, DataType)> {
+        vec![
+            col("id", DataType::Int64),
+            col("name", DataType::String),
+            col("score", DataType::Float64),
+        ]
+    }
+
+    fn sample_block(rows: usize) -> Block {
+        let mut names = StringColumn::new();
+        for i in 0..rows {
+            names.push(&format!("n{i}"));
+        }
+        Block::new(
+            vec![
+                ("id".to_string(), Column::Int64((0..rows as i64).collect())),
+                ("name".to_string(), Column::String(names)),
+                (
+                    "score".to_string(),
+                    Column::Float64((0..rows).map(|i| i as f64).collect()),
+                ),
+            ],
+            rows,
+        )
+    }
+
+    /// A finished part holding `rows` rows of `sample_schema` data. Going through
+    /// the real `PartWriter` is the point: the `{name}.bin` / `{name}.data.bin` /
+    /// `{name}.offsets.bin` convention is spelled out independently in
+    /// `PartWriter::new` and in `open`, and nothing but a round trip holds the two
+    /// spellings together.
+    fn written_part(rows: usize) -> (TempDir, PathBuf) {
+        let (root, dir) = part_dir();
+
+        let mut writer = PartWriter::new(dir.clone(), &sample_schema()).unwrap();
+        if rows > 0 {
+            writer.write_block(&sample_block(rows)).unwrap();
+        }
+        writer.finish().unwrap();
+
+        (root, dir)
+    }
+
+    /// A part directory containing nothing but a hand-written `schema.txt` — for
+    /// the corrupt shapes `PartWriter` cannot produce.
+    fn part_with_schema_text(text: &str) -> (TempDir, PathBuf) {
+        let (root, dir) = part_dir();
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("schema.txt"), text).unwrap();
+        (root, dir)
+    }
+
+    /// The error from an `open` that must fail. `unwrap_err` is unavailable —
+    /// `PartReader` holds open file handles and deliberately has no `Debug`.
+    fn open_error(dir: &Path, columns: &[&str]) -> PartError {
+        match PartReader::open(dir, columns) {
+            Ok(_) => panic!("expected opening {dir:?} with {columns:?} to fail"),
+            Err(e) => e,
+        }
+    }
+
+    /// Rendered message of a failed `open`, mirroring `err` above.
+    fn open_err(dir: &Path, columns: &[&str]) -> String {
+        open_error(dir, columns).to_string()
+    }
+
+    /// The schema index each opened reader is bound to, in `readers` order.
+    fn reader_indices(reader: &PartReader) -> Vec<usize> {
+        reader.readers.iter().map(|(i, _)| *i).collect()
     }
 
     // ---- happy path ----------------------------------------------------
@@ -505,4 +599,395 @@ mod tests {
     // Note: the `"missing version line"` branch is unreachable and therefore
     // untested — `text.is_empty()` is rejected first, and `str::lines()` on any
     // non-empty string always yields at least one item.
+
+    // ---- open: round trip ----------------------------------------------
+
+    /// The end-to-end contract: a part `PartWriter` produced is a part
+    /// `PartReader` opens. If either side renames a column file, this fails and
+    /// nothing else does.
+    #[test]
+    fn open_reads_a_part_written_by_part_writer() {
+        let (_root, dir) = written_part(3);
+
+        let reader = PartReader::open(&dir, &["id", "name", "score"]).unwrap();
+
+        assert_eq!(reader.schema, sample_schema());
+        assert_eq!(reader.num_rows, 3);
+        assert_eq!(reader.rows_read, 0);
+        assert_eq!(reader_indices(&reader), vec![0, 1, 2]);
+    }
+
+    /// `Float64` shares the single-file branch with `Int64`; only `String` gets a
+    /// pair. A reader shape that disagreed with the writer's file layout would
+    /// decode the wrong stream.
+    #[test]
+    fn numeric_columns_get_one_reader_and_string_columns_a_pair() {
+        let (_root, dir) = written_part(1);
+
+        let reader = PartReader::open(&dir, &["id", "name", "score"]).unwrap();
+
+        assert!(matches!(reader.readers[0].1, ColumnReaders::Single(_)));
+        assert!(matches!(reader.readers[1].1, ColumnReaders::Pair { .. }));
+        assert!(matches!(reader.readers[2].1, ColumnReaders::Single(_)));
+    }
+
+    #[test]
+    fn opens_a_single_column_projection() {
+        let (_root, dir) = written_part(2);
+
+        let reader = PartReader::open(&dir, &["name"]).unwrap();
+
+        assert_eq!(reader_indices(&reader), vec![1]);
+    }
+
+    /// `readers` holds indices into the *whole* part schema, not into the
+    /// projection, so the schema must be kept whole. A future `next_block` that
+    /// indexed a projected-down schema would read the wrong column's type.
+    #[test]
+    fn schema_field_holds_the_whole_part_schema_not_the_projection() {
+        let (_root, dir) = written_part(1);
+
+        let reader = PartReader::open(&dir, &["score"]).unwrap();
+
+        assert_eq!(reader.schema, sample_schema());
+        assert_eq!(reader_indices(&reader), vec![2]);
+    }
+
+    /// Readers come back in schema order whatever order they were asked for. This
+    /// is the one thing about `open` a caller is most likely to assume the other
+    /// way round.
+    #[test]
+    fn readers_are_ordered_by_schema_index_not_by_projection_order() {
+        let (_root, dir) = written_part(1);
+
+        let reader = PartReader::open(&dir, &["score", "id"]).unwrap();
+
+        assert_eq!(reader_indices(&reader), vec![0, 2]);
+    }
+
+    /// A part whose writer never received a block: the column files exist but are
+    /// empty, and that is a valid part, not a corrupt one.
+    #[test]
+    fn opens_a_part_with_zero_rows() {
+        let (_root, dir) = written_part(0);
+
+        let reader = PartReader::open(&dir, &["id", "name", "score"]).unwrap();
+
+        assert_eq!(reader.num_rows, 0);
+        assert_eq!(reader.readers.len(), 3);
+    }
+
+    /// Opening is read-only, so overlapping readers over one part are independent.
+    #[test]
+    fn two_readers_can_open_the_same_part_at_once() {
+        let (_root, dir) = written_part(2);
+
+        let first = PartReader::open(&dir, &["id"]).unwrap();
+        let second = PartReader::open(&dir, &["id", "name"]).unwrap();
+
+        assert_eq!(first.num_rows, 2);
+        assert_eq!(second.num_rows, 2);
+    }
+
+    // ---- open: projection contract -------------------------------------
+
+    #[test]
+    #[should_panic(expected = "empty column projection not supported yet")]
+    fn panics_on_an_empty_projection() {
+        let (_root, dir) = written_part(1);
+
+        let _ = PartReader::open(&dir, &[]);
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate column name: id")]
+    fn panics_on_a_duplicate_requested_column() {
+        let (_root, dir) = written_part(1);
+
+        let _ = PartReader::open(&dir, &["id", "id"]);
+    }
+
+    /// The check scans every earlier request, not just the preceding one — the
+    /// projection counterpart of `detects_non_adjacent_duplicate_column_names`.
+    #[test]
+    #[should_panic(expected = "duplicate column name: id")]
+    fn detects_non_adjacent_duplicate_requested_columns() {
+        let (_root, dir) = written_part(1);
+
+        let _ = PartReader::open(&dir, &["id", "name", "id"]);
+    }
+
+    /// The projection is a caller-contract violation, so it is rejected before any
+    /// filesystem call — a bad projection panics rather than being masked by a
+    /// `NotFound` for the directory.
+    #[test]
+    #[should_panic(expected = "empty column projection not supported yet")]
+    fn the_projection_is_validated_before_the_filesystem_is_touched() {
+        let _ = PartReader::open(Path::new("/nonexistent/part_0"), &[]);
+    }
+
+    // ---- open: missing or unreadable part ------------------------------
+
+    #[test]
+    fn a_missing_directory_is_not_found() {
+        let (_root, dir) = part_dir();
+
+        let e = open_error(&dir, &["id"]);
+
+        assert!(
+            matches!(e, PartError::NotFound(ref p) if *p == dir),
+            "{e:?}"
+        );
+        assert!(e.to_string().starts_with("part not found: "));
+    }
+
+    /// `is_dir` folds "wrong kind of thing" into the same error as "nothing
+    /// there". Documents current behavior.
+    #[test]
+    fn a_regular_file_in_place_of_a_part_dir_is_not_found() {
+        let (_root, dir) = part_dir();
+        fs::write(&dir, b"not a part").unwrap();
+
+        let e = open_error(&dir, &["id"]);
+
+        assert!(matches!(e, PartError::NotFound(_)), "{e:?}");
+    }
+
+    /// The payoff of the writer's staging directory: a part still being written is
+    /// invisible, so a reader never sees a torn one.
+    #[test]
+    fn an_unfinished_part_is_not_found() {
+        let (_root, dir) = part_dir();
+        let mut writer = PartWriter::new(dir.clone(), &sample_schema()).unwrap();
+        writer.write_block(&sample_block(1)).unwrap();
+
+        let e = open_error(&dir, &["id"]);
+
+        assert!(matches!(e, PartError::NotFound(_)), "{e:?}");
+    }
+
+    /// Reaching past the staging directory's name does not get you a readable
+    /// part either: `schema.txt` is written only by `finish`.
+    #[test]
+    fn a_staging_directory_is_not_a_readable_part() {
+        let (_root, dir) = part_dir();
+        let writer = PartWriter::new(dir.clone(), &sample_schema()).unwrap();
+        drop(writer);
+
+        assert!(open_err(&staging_of(&dir), &["id"]).contains("schema.txt missing"));
+    }
+
+    /// A directory that exists but has no schema is corrupt, not absent — the part
+    /// was found, it just cannot be interpreted.
+    #[test]
+    fn a_dir_without_a_schema_file_is_corrupt() {
+        let (_root, dir) = part_dir();
+        fs::create_dir_all(&dir).unwrap();
+
+        let e = open_error(&dir, &["id"]);
+
+        assert!(matches!(e, PartError::Corrupt(_)), "{e:?}");
+        assert!(e.to_string().contains("schema.txt missing"));
+    }
+
+    /// Only `NotFound` is reclassified as a corrupt part; every other read failure
+    /// keeps its `io::Error`, so a permissions or encoding problem is not
+    /// misreported as a damaged part.
+    #[test]
+    fn a_non_utf8_schema_file_surfaces_as_io() {
+        let (_root, dir) = part_dir();
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("schema.txt"), [0xff, 0xfe, 0xfd]).unwrap();
+
+        let e = open_error(&dir, &["id"]);
+
+        assert!(matches!(e, PartError::Io(_)), "{e:?}");
+    }
+
+    /// One representative case — `parse_schema` itself is covered exhaustively
+    /// above; this only pins that `open` propagates rather than swallows.
+    #[test]
+    fn schema_parse_errors_are_propagated() {
+        let (_root, dir) = part_with_schema_text("version=2\nnum_rows=0\ncolumn=id:Int64\n");
+
+        let e = open_error(&dir, &["id"]);
+
+        assert!(
+            matches!(e, PartError::UnsupportedVersion { ref found, .. } if found == "2"),
+            "{e:?}"
+        );
+    }
+
+    // ---- open: column resolution ---------------------------------------
+
+    #[test]
+    fn an_unknown_column_is_column_not_found() {
+        let (_root, dir) = written_part(1);
+
+        let e = open_error(&dir, &["nope"]);
+
+        assert!(
+            matches!(e, PartError::ColumnNotFound(ref n) if n == "nope"),
+            "{e:?}"
+        );
+        assert_eq!(e.to_string(), "column 'nope' not found in part schema");
+    }
+
+    /// Names differing only in case are distinct columns, matching
+    /// `duplicate_detection_is_case_sensitive` on the schema side.
+    #[test]
+    fn column_lookup_is_case_sensitive() {
+        let (_root, dir) = written_part(1);
+
+        assert!(open_err(&dir, &["ID"]).contains("column 'ID' not found"));
+    }
+
+    /// Resolution short-circuits in *projection* order, not schema order, so the
+    /// column the caller listed first is the one reported.
+    #[test]
+    fn the_first_unknown_column_in_projection_order_is_reported() {
+        let (_root, dir) = written_part(1);
+
+        assert!(open_err(&dir, &["zzz", "aaa"]).contains("column 'zzz' not found"));
+    }
+
+    /// A part written with an empty schema is unreadable in every direction: there
+    /// is no column to project, and the empty projection is a panic. Pins the gap
+    /// the `open` assertion's backlog note refers to.
+    #[test]
+    fn a_part_with_no_columns_cannot_be_projected() {
+        let (_root, dir) = part_dir();
+        PartWriter::new(dir.clone(), &[]).unwrap().finish().unwrap();
+
+        assert!(open_err(&dir, &["id"]).contains("column 'id' not found"));
+    }
+
+    /// `parse_schema` accepts an empty column name and `PartWriter` emits a file
+    /// literally named `.bin` for it, so the round trip holds. Documents current
+    /// behavior.
+    #[test]
+    fn opens_a_column_with_an_empty_name() {
+        let (_root, dir) = part_dir();
+        PartWriter::new(dir.clone(), &[col("", DataType::Int64)])
+            .unwrap()
+            .finish()
+            .unwrap();
+
+        let reader = PartReader::open(&dir, &[""]).unwrap();
+
+        assert_eq!(reader_indices(&reader), vec![0]);
+    }
+
+    // ---- open: corrupt column files ------------------------------------
+
+    #[test]
+    fn a_missing_numeric_column_file_is_corrupt() {
+        let (_root, dir) = written_part(1);
+        fs::remove_file(dir.join("id.bin")).unwrap();
+
+        let e = open_error(&dir, &["id"]);
+
+        assert!(matches!(e, PartError::Corrupt(_)), "{e:?}");
+        assert_eq!(e.to_string(), "corrupt part: column file 'id.bin' missing");
+    }
+
+    #[test]
+    fn a_missing_string_data_file_is_corrupt() {
+        let (_root, dir) = written_part(1);
+        fs::remove_file(dir.join("name.data.bin")).unwrap();
+
+        assert!(open_err(&dir, &["name"]).contains("column file 'name.data.bin' missing"));
+    }
+
+    /// Both halves of a string column need their own case — a reader that opened
+    /// only the data file would still pass the test above while being unable to
+    /// decode a single value.
+    #[test]
+    fn a_missing_string_offsets_file_is_corrupt() {
+        let (_root, dir) = written_part(1);
+        fs::remove_file(dir.join("name.offsets.bin")).unwrap();
+
+        assert!(open_err(&dir, &["name"]).contains("column file 'name.offsets.bin' missing"));
+    }
+
+    /// With both gone the data file is named, because the struct literal evaluates
+    /// `data` before `offsets`. Pins which file the message points at.
+    #[test]
+    fn the_data_file_is_reported_when_both_string_files_are_missing() {
+        let (_root, dir) = written_part(1);
+        fs::remove_file(dir.join("name.data.bin")).unwrap();
+        fs::remove_file(dir.join("name.offsets.bin")).unwrap();
+
+        assert!(open_err(&dir, &["name"]).contains("column file 'name.data.bin' missing"));
+    }
+
+    /// The positive form of the tests above: `open` touches nothing outside the
+    /// projection, so damage to an unread column costs nothing.
+    #[test]
+    fn only_projected_columns_are_opened() {
+        let (_root, dir) = written_part(1);
+        fs::remove_file(dir.join("score.bin")).unwrap();
+        fs::remove_file(dir.join("name.data.bin")).unwrap();
+
+        let reader = PartReader::open(&dir, &["id"]).unwrap();
+
+        assert_eq!(reader_indices(&reader), vec![0]);
+    }
+
+    /// Lookup and file-opening are interleaved per column rather than run as two
+    /// passes, so a broken early column outranks an unknown later one.
+    /// `ColumnNotFound` only wins *within* a single column. Pins the precedence.
+    #[test]
+    fn a_missing_file_is_reported_before_a_later_unknown_column() {
+        let (_root, dir) = written_part(1);
+        fs::remove_file(dir.join("id.bin")).unwrap();
+
+        assert!(open_err(&dir, &["id", "nope"]).contains("column file 'id.bin' missing"));
+    }
+
+    // ---- open: pinned current behavior ---------------------------------
+
+    /// Nothing is decoded at open time, so garbage in a column file is a read-time
+    /// failure. Documents current behavior.
+    #[test]
+    fn open_does_not_validate_column_file_contents() {
+        let (_root, dir) = written_part(2);
+        fs::write(dir.join("id.bin"), b"not a chunk").unwrap();
+
+        assert!(PartReader::open(&dir, &["id"]).is_ok());
+    }
+
+    /// `num_rows` is taken from the header on trust — it is never checked against
+    /// the bytes on disk. Documents current behavior.
+    #[test]
+    fn open_does_not_cross_check_num_rows_against_the_data() {
+        let (_root, dir) = part_with_schema_text("version=1\nnum_rows=7\ncolumn=id:Int64\n");
+        fs::write(dir.join("id.bin"), b"").unwrap();
+
+        let reader = PartReader::open(&dir, &["id"]).unwrap();
+
+        assert_eq!(reader.num_rows, 7);
+    }
+
+    /// The counterpart of `a_missing_numeric_column_file_is_corrupt`: a file that
+    /// is present but cannot be opened keeps its `io::Error` instead of being
+    /// reported as a missing file.
+    #[test]
+    #[cfg(unix)]
+    fn an_unreadable_column_file_surfaces_as_io() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_root, dir) = written_part(1);
+        let path = dir.join("id.bin");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+
+        // `root` ignores the mode bits, leaving nothing to assert.
+        if File::open(&path).is_ok() {
+            return;
+        }
+
+        let e = open_error(&dir, &["id"]);
+
+        assert!(matches!(e, PartError::Io(_)), "{e:?}");
+    }
 }
