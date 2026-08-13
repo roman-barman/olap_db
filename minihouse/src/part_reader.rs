@@ -1,5 +1,6 @@
-use crate::DataType;
 use crate::codec::CodecError;
+use crate::column_io::{read_f64_chunk, read_i64_chunk, read_str_chunk};
+use crate::{Block, Column, DataType};
 use std::fs;
 use std::fs::File;
 use std::io::{BufReader, ErrorKind};
@@ -77,6 +78,66 @@ impl PartReader {
             rows_read: 0,
             readers,
         })
+    }
+
+    pub(crate) fn next_block(&mut self) -> Result<Option<Block>, PartError> {
+        let mut columns: Vec<(String, Column)> = Vec::with_capacity(self.readers.len());
+        let mut len: Option<usize> = None;
+        let mut ended = 0usize;
+
+        for (idx, reader) in self.readers.iter_mut() {
+            let (name, dt) = &self.schema[*idx];
+            let column: Option<Column> = match (dt, reader) {
+                (DataType::Int64, ColumnReaders::Single(r)) => {
+                    read_i64_chunk(r)?.map(Column::Int64)
+                }
+                (DataType::Float64, ColumnReaders::Single(r)) => {
+                    read_f64_chunk(r)?.map(Column::Float64)
+                }
+                (DataType::String, ColumnReaders::Pair { data, offsets }) => {
+                    read_str_chunk(data, offsets)?.map(Column::String)
+                }
+                _ => unreachable!("column '{name}': reader shape mismatch with {dt:?} — broken by open"),
+            };
+
+            match column {
+                None => ended += 1,
+                Some(c) => {
+                    match len {
+                        None => len = Some(c.len()),
+                        Some(l) if l != c.len() => {
+                            return Err(PartError::Corrupt(format!(
+                                "column files out of sync: '{name}' chunk has {} rows, expected {l}",
+                                c.len()
+                            )));
+                        }
+                        _ => {}
+                    }
+                    columns.push((name.clone(), c));
+                }
+            }
+        }
+
+        match (ended, columns.len()) {
+            (0, _) => {
+                let len = len.expect("non-empty readers");
+                self.rows_read += len;
+                Ok(Some(Block::new(columns, len)))
+            }
+            (e, 0) if e == self.readers.len() => {
+                // все кончились — финальная сверка
+                if self.rows_read != self.num_rows {
+                    return Err(PartError::Corrupt(format!(
+                        "part truncated: schema declares {} rows, files contain {}",
+                        self.num_rows, self.rows_read
+                    )));
+                }
+                Ok(None)
+            }
+            _ => Err(PartError::Corrupt(
+                "column files out of sync: some ended, some continue".into(),
+            )),
+        }
     }
 }
 
