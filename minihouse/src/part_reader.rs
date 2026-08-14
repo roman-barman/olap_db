@@ -97,7 +97,9 @@ impl PartReader {
                 (DataType::String, ColumnReaders::Pair { data, offsets }) => {
                     read_str_chunk(data, offsets)?.map(Column::String)
                 }
-                _ => unreachable!("column '{name}': reader shape mismatch with {dt:?} — broken by open"),
+                _ => unreachable!(
+                    "column '{name}': reader shape mismatch with {dt:?} — broken by open"
+                ),
             };
 
             match column {
@@ -241,9 +243,13 @@ pub(crate) enum PartError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codec::write_block;
+    use crate::column_io::{write_f64_chunk, write_i64_chunk, write_str_chunk};
     use crate::part_writer::PartWriter;
     use crate::string_column::StringColumn;
     use crate::{Block, Column};
+    use std::fs::OpenOptions;
+    use std::io::Write;
     use tempfile::TempDir;
 
     /// Every failure path returns `PartError`; tests assert on the rendered message.
@@ -1051,4 +1057,881 @@ mod tests {
 
         assert!(matches!(e, PartError::Io(_)), "{e:?}");
     }
+
+    // ---- `next_block` fixtures -----------------------------------------
+
+    /// `sample_block`, but with every value derived from `start`, so consecutive
+    /// blocks are distinguishable. `sample_block(n) == sample_block_at(0, n)`.
+    fn sample_block_at(start: i64, rows: usize) -> Block {
+        let ids: Vec<i64> = (start..start + rows as i64).collect();
+        let mut names = StringColumn::new();
+        for id in &ids {
+            names.push(&format!("n{id}"));
+        }
+        Block::new(
+            vec![
+                ("id".to_string(), Column::Int64(ids.clone())),
+                ("name".to_string(), Column::String(names)),
+                (
+                    "score".to_string(),
+                    Column::Float64(ids.iter().map(|&i| i as f64).collect()),
+                ),
+            ],
+            rows,
+        )
+    }
+
+    fn string_column(values: &[&str]) -> StringColumn {
+        let mut column = StringColumn::new();
+        for v in values {
+            column.push(v);
+        }
+        column
+    }
+
+    /// A finished part whose blocks have the given row counts, in order.
+    /// `PartWriter::write_block` never splits or merges a block, so repeated calls
+    /// are the only honest way to get more than one chunk per column file.
+    fn written_part_blocks(rows_per_block: &[usize]) -> (TempDir, PathBuf) {
+        let (root, dir) = part_dir();
+
+        let mut writer = PartWriter::new(dir.clone(), &sample_schema()).unwrap();
+        let mut start = 0i64;
+        for &rows in rows_per_block {
+            writer.write_block(&sample_block_at(start, rows)).unwrap();
+            start += rows as i64;
+        }
+        writer.finish().unwrap();
+
+        (root, dir)
+    }
+
+    /// A part with a hand-written `schema.txt` and an empty file for every column
+    /// it declares. The empty files are not incidental: `open` refuses a part with
+    /// a missing column file, so even a file the test never appends to must exist.
+    fn hand_built_part(num_rows: usize, schema: &[(String, DataType)]) -> (TempDir, PathBuf) {
+        let mut text = format!("version=1\nnum_rows={num_rows}\n");
+        for (name, dt) in schema {
+            text.push_str(&format!("column={name}:{}\n", dt.as_str()));
+        }
+
+        let (root, dir) = part_with_schema_text(&text);
+        for (name, dt) in schema {
+            match dt {
+                DataType::Int64 | DataType::Float64 => {
+                    File::create(dir.join(format!("{name}.bin"))).unwrap();
+                }
+                DataType::String => {
+                    File::create(dir.join(format!("{name}.data.bin"))).unwrap();
+                    File::create(dir.join(format!("{name}.offsets.bin"))).unwrap();
+                }
+            }
+        }
+
+        (root, dir)
+    }
+
+    fn append(dir: &Path, file: &str) -> File {
+        OpenOptions::new()
+            .append(true)
+            .open(dir.join(file))
+            .unwrap()
+    }
+
+    /// Appends one chunk to a column, framed exactly as `PartWriter` frames it —
+    /// so a test can spell out a per-column chunk sequence the writer could never
+    /// produce, such as two columns of differing chunk counts.
+    fn append_chunk(dir: &Path, name: &str, column: &Column) {
+        match column {
+            Column::Int64(v) => {
+                write_i64_chunk(&mut append(dir, &format!("{name}.bin")), v).unwrap()
+            }
+            Column::Float64(v) => {
+                write_f64_chunk(&mut append(dir, &format!("{name}.bin")), v).unwrap()
+            }
+            Column::String(sc) => write_str_chunk(
+                &mut append(dir, &format!("{name}.data.bin")),
+                &mut append(dir, &format!("{name}.offsets.bin")),
+                sc,
+            )
+            .unwrap(),
+        }
+    }
+
+    fn append_raw(dir: &Path, file: &str, bytes: &[u8]) {
+        append(dir, file).write_all(bytes).unwrap();
+    }
+
+    /// One well-framed block around an arbitrary payload — for chunks whose *body*
+    /// must be invalid in a way `write_*_chunk` would never emit.
+    fn framed(raw: &[u8]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        write_block(&mut buf, raw).unwrap();
+        buf
+    }
+
+    fn truncate_by(dir: &Path, file: &str, bytes: u64) {
+        let path = dir.join(file);
+        let len = fs::metadata(&path).unwrap().len();
+        OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(len - bytes)
+            .unwrap();
+    }
+
+    /// A part over `[id:Int64, score:Float64]` declaring `num_rows`, holding
+    /// exactly the given chunk sequences. Most desync and truncation fixtures are
+    /// a single call to this.
+    fn numeric_part(num_rows: usize, ids: &[&[i64]], scores: &[&[f64]]) -> (TempDir, PathBuf) {
+        let schema = vec![col("id", DataType::Int64), col("score", DataType::Float64)];
+        let (root, dir) = hand_built_part(num_rows, &schema);
+
+        for chunk in ids {
+            append_chunk(&dir, "id", &Column::Int64(chunk.to_vec()));
+        }
+        for chunk in scores {
+            append_chunk(&dir, "score", &Column::Float64(chunk.to_vec()));
+        }
+
+        (root, dir)
+    }
+
+    /// The error from a `next_block` that must fail, mirroring `open_error`.
+    fn next_error(reader: &mut PartReader) -> PartError {
+        match reader.next_block() {
+            Ok(block) => panic!("expected next_block to fail, got {block:?}"),
+            Err(e) => e,
+        }
+    }
+
+    /// Rendered message of a failed `next_block`, mirroring `open_err`.
+    fn next_err(reader: &mut PartReader) -> String {
+        next_error(reader).to_string()
+    }
+
+    /// Every block until the reader ends.
+    fn read_all(reader: &mut PartReader) -> Vec<Block> {
+        let mut blocks = Vec::new();
+        while let Some(block) = reader.next_block().unwrap() {
+            blocks.push(block);
+        }
+        blocks
+    }
+
+    fn row_counts(blocks: &[Block]) -> Vec<usize> {
+        blocks.iter().map(|b| b.num_rows()).collect()
+    }
+
+    /// The block's columns in the order it holds them — the projection tests are
+    /// all a single assertion on this.
+    fn column_names(block: &Block) -> Vec<&str> {
+        block.columns().iter().map(|(n, _)| n.as_str()).collect()
+    }
+
+    /// `StringColumn` has no iterator, so values come out by index.
+    fn strs(block: &Block, name: &str) -> Vec<String> {
+        match block.column(name) {
+            Some(Column::String(sc)) => (0..sc.len()).map(|i| sc.get(i).to_string()).collect(),
+            other => panic!("column '{name}' is not a string column: {other:?}"),
+        }
+    }
+
+    /// `NaN != NaN`, so a float column carrying one cannot be compared with `==`.
+    fn bits(values: &[f64]) -> Vec<u64> {
+        values.iter().map(|v| v.to_bits()).collect()
+    }
+
+    // ---- next_block: round trip ----------------------------------------
+
+    /// The read half of the writer/reader contract, across all three types at
+    /// once: what went into `write_block` is what comes out of `next_block`.
+    #[test]
+    fn next_block_reads_back_the_block_part_writer_wrote() {
+        let (_root, dir) = written_part(3);
+        let mut reader = PartReader::open(&dir, &["id", "name", "score"]).unwrap();
+
+        let block = reader.next_block().unwrap().unwrap();
+
+        assert_eq!(block.num_rows(), 3);
+        assert_eq!(block.column("id"), Some(&Column::Int64(vec![0, 1, 2])));
+        assert_eq!(
+            block.column("name"),
+            Some(&Column::String(string_column(&["n0", "n1", "n2"])))
+        );
+        assert_eq!(
+            block.column("score"),
+            Some(&Column::Float64(vec![0.0, 1.0, 2.0]))
+        );
+        assert!(reader.next_block().unwrap().is_none());
+    }
+
+    /// Chunk boundaries are block boundaries: nothing is merged, nothing is split.
+    #[test]
+    fn next_block_returns_one_block_per_written_block() {
+        let (_root, dir) = written_part_blocks(&[2, 1, 3]);
+        let mut reader = PartReader::open(&dir, &["id", "name", "score"]).unwrap();
+
+        assert_eq!(row_counts(&read_all(&mut reader)), vec![2, 1, 3]);
+    }
+
+    /// Row counts alone would pass even if the blocks came back reversed — this
+    /// pins the values, so ordering is actually checked.
+    #[test]
+    fn blocks_come_back_in_write_order() {
+        let (_root, dir) = written_part_blocks(&[2, 2]);
+        let mut reader = PartReader::open(&dir, &["id", "name"]).unwrap();
+
+        let blocks = read_all(&mut reader);
+
+        assert_eq!(blocks[0].column("id"), Some(&Column::Int64(vec![0, 1])));
+        assert_eq!(strs(&blocks[0], "name"), vec!["n0", "n1"]);
+        assert_eq!(blocks[1].column("id"), Some(&Column::Int64(vec![2, 3])));
+        assert_eq!(strs(&blocks[1], "name"), vec!["n2", "n3"]);
+    }
+
+    #[test]
+    fn next_block_returns_none_after_the_last_block() {
+        let (_root, dir) = written_part(1);
+        let mut reader = PartReader::open(&dir, &["id"]).unwrap();
+
+        assert!(reader.next_block().unwrap().is_some());
+        assert!(reader.next_block().unwrap().is_none());
+    }
+
+    /// The end of a part is not a one-shot signal: a caller that polls again gets
+    /// `None` again, not an error and not a phantom block. Every reader re-hits a
+    /// clean EOF and `rows_read` still matches, so the truncation check keeps
+    /// passing.
+    #[test]
+    fn next_block_keeps_returning_none_after_the_end() {
+        let (_root, dir) = written_part(1);
+        let mut reader = PartReader::open(&dir, &["id", "name"]).unwrap();
+
+        assert!(reader.next_block().unwrap().is_some());
+        for _ in 0..3 {
+            assert!(reader.next_block().unwrap().is_none());
+        }
+    }
+
+    /// A writer that never received a block leaves empty column files, and that is
+    /// an empty part, not a corrupt one.
+    #[test]
+    fn a_part_with_no_blocks_yields_none_immediately() {
+        let (_root, dir) = written_part(0);
+        let mut reader = PartReader::open(&dir, &["id", "name", "score"]).unwrap();
+
+        assert!(reader.next_block().unwrap().is_none());
+    }
+
+    /// The read-side counterpart of `part_writer::empty_block_writes_a_zero_length_chunk`:
+    /// a framed zero-length chunk is a *block*, distinct from EOF. Confusing the
+    /// two would make an empty block silently truncate the part.
+    #[test]
+    fn a_zero_row_block_comes_back_as_an_empty_block() {
+        let (_root, dir) = written_part_blocks(&[0]);
+        let mut reader = PartReader::open(&dir, &["id", "name", "score"]).unwrap();
+
+        let block = reader.next_block().unwrap().unwrap();
+
+        assert_eq!(block.num_rows(), 0);
+        assert_eq!(column_names(&block), vec!["id", "name", "score"]);
+        assert!(block.columns().iter().all(|(_, c)| c.is_empty()));
+        assert!(reader.next_block().unwrap().is_none());
+    }
+
+    /// An empty block neither ends the iteration nor collapses into its
+    /// neighbours.
+    #[test]
+    fn zero_row_blocks_between_data_blocks_are_preserved() {
+        let (_root, dir) = written_part_blocks(&[2, 0, 1]);
+        let mut reader = PartReader::open(&dir, &["id", "name", "score"]).unwrap();
+
+        assert_eq!(row_counts(&read_all(&mut reader)), vec![2, 0, 1]);
+    }
+
+    /// N empty blocks yield N blocks, and `rows_read == 0` still satisfies the
+    /// declared `num_rows=0`.
+    #[test]
+    fn a_part_of_only_zero_row_blocks_yields_one_block_each() {
+        let (_root, dir) = written_part_blocks(&[0, 0]);
+        let mut reader = PartReader::open(&dir, &["id", "name", "score"]).unwrap();
+
+        assert_eq!(row_counts(&read_all(&mut reader)), vec![0, 0]);
+    }
+
+    /// The `Pair` branch has to rebuild the offsets as well as the bytes. An empty
+    /// value and a multibyte one are where an off-by-one or a char/byte confusion
+    /// would show.
+    #[test]
+    fn string_values_survive_the_round_trip() {
+        let (_root, dir) = part_dir();
+        let names = string_column(&["", "日本語", "a"]);
+        let mut writer = PartWriter::new(dir.clone(), &sample_schema()).unwrap();
+        writer
+            .write_block(&Block::new(
+                vec![
+                    ("id".to_string(), Column::Int64(vec![0, 1, 2])),
+                    ("name".to_string(), Column::String(names.clone())),
+                    ("score".to_string(), Column::Float64(vec![0.0, 0.0, 0.0])),
+                ],
+                3,
+            ))
+            .unwrap();
+        writer.finish().unwrap();
+
+        let mut reader = PartReader::open(&dir, &["name"]).unwrap();
+        let block = reader.next_block().unwrap().unwrap();
+
+        assert_eq!(block.column("name"), Some(&Column::String(names)));
+    }
+
+    /// Values are moved as little-endian bytes, never through an intermediate
+    /// wider or narrower type — the ends of each range prove it.
+    #[test]
+    fn extreme_numeric_values_survive_the_round_trip() {
+        let (_root, dir) = part_dir();
+        let scores = vec![f64::NAN, f64::INFINITY, f64::NEG_INFINITY];
+        let mut writer = PartWriter::new(dir.clone(), &sample_schema()).unwrap();
+        writer
+            .write_block(&Block::new(
+                vec![
+                    ("id".to_string(), Column::Int64(vec![i64::MIN, 0, i64::MAX])),
+                    (
+                        "name".to_string(),
+                        Column::String(string_column(&["a", "b", "c"])),
+                    ),
+                    ("score".to_string(), Column::Float64(scores.clone())),
+                ],
+                3,
+            ))
+            .unwrap();
+        writer.finish().unwrap();
+
+        let mut reader = PartReader::open(&dir, &["id", "score"]).unwrap();
+        let block = reader.next_block().unwrap().unwrap();
+
+        assert_eq!(
+            block.column("id"),
+            Some(&Column::Int64(vec![i64::MIN, 0, i64::MAX]))
+        );
+        let Some(Column::Float64(read)) = block.column("score") else {
+            panic!("score is not a float column");
+        };
+        assert_eq!(bits(read), bits(&scores));
+    }
+
+    // ---- next_block: projection -----------------------------------------
+
+    #[test]
+    fn a_block_holds_only_the_projected_columns() {
+        let (_root, dir) = written_part(2);
+        let mut reader = PartReader::open(&dir, &["id"]).unwrap();
+
+        let block = reader.next_block().unwrap().unwrap();
+
+        assert_eq!(column_names(&block), vec!["id"]);
+        assert_eq!(block.num_rows(), 2);
+        assert!(block.column("name").is_none());
+    }
+
+    /// The headline invariant of this method, and the counterpart of
+    /// `readers_are_ordered_by_schema_index_not_by_projection_order`: `open` sorts
+    /// the readers, so the block is in schema order however the caller asked. A
+    /// caller that indexed `columns()` positionally against its own projection
+    /// would silently read the wrong column.
+    #[test]
+    fn block_columns_are_in_schema_order_not_projection_order() {
+        let (_root, dir) = written_part(2);
+        let mut reader = PartReader::open(&dir, &["score", "id"]).unwrap();
+
+        let block = reader.next_block().unwrap().unwrap();
+
+        assert_eq!(column_names(&block), vec!["id", "score"]);
+    }
+
+    /// Row counts come from the chunks, so they are a property of the part, not of
+    /// what was asked for.
+    #[test]
+    fn projection_does_not_change_row_counts() {
+        let (_root, dir) = written_part_blocks(&[2, 1]);
+        let mut reader = PartReader::open(&dir, &["score"]).unwrap();
+
+        assert_eq!(row_counts(&read_all(&mut reader)), vec![2, 1]);
+    }
+
+    /// The read-time counterpart of `only_projected_columns_are_opened`: a column
+    /// outside the projection is never decoded, so damage to it costs nothing.
+    #[test]
+    fn damage_to_an_unprojected_column_is_never_read() {
+        let (_root, dir) = written_part(2);
+        fs::write(dir.join("name.data.bin"), b"garbage").unwrap();
+        let mut reader = PartReader::open(&dir, &["id", "score"]).unwrap();
+
+        assert_eq!(row_counts(&read_all(&mut reader)), vec![2]);
+    }
+
+    /// Each reader owns its own file cursors, so one draining the part does not
+    /// move another along with it.
+    #[test]
+    fn two_readers_over_one_part_advance_independently() {
+        let (_root, dir) = written_part_blocks(&[1, 1]);
+        let mut first = PartReader::open(&dir, &["id"]).unwrap();
+        let mut second = PartReader::open(&dir, &["id"]).unwrap();
+
+        first.next_block().unwrap().unwrap();
+
+        assert_eq!(
+            first.next_block().unwrap().unwrap().column("id"),
+            Some(&Column::Int64(vec![1]))
+        );
+        assert_eq!(
+            second.next_block().unwrap().unwrap().column("id"),
+            Some(&Column::Int64(vec![0]))
+        );
+    }
+
+    /// The `Pair` branch driving both of its files to the end on its own, with no
+    /// numeric column alongside to keep it honest.
+    #[test]
+    fn a_string_only_projection_reads_to_the_end() {
+        let (_root, dir) = written_part_blocks(&[2, 1]);
+        let mut reader = PartReader::open(&dir, &["name"]).unwrap();
+
+        let blocks = read_all(&mut reader);
+
+        assert_eq!(row_counts(&blocks), vec![2, 1]);
+        assert_eq!(strs(&blocks[0], "name"), vec!["n0", "n1"]);
+        assert_eq!(strs(&blocks[1], "name"), vec!["n2"]);
+    }
+
+    // ---- next_block: row accounting -------------------------------------
+
+    /// `rows_read` is the counter the end-of-part check is built on, so it has to
+    /// track the chunks actually handed out.
+    #[test]
+    fn rows_read_accumulates_across_blocks() {
+        let (_root, dir) = written_part_blocks(&[2, 1, 3]);
+        let mut reader = PartReader::open(&dir, &["id"]).unwrap();
+
+        assert_eq!(reader.rows_read, 0);
+        for expected in [2, 3, 6] {
+            reader.next_block().unwrap().unwrap();
+            assert_eq!(reader.rows_read, expected);
+        }
+        assert!(reader.next_block().unwrap().is_none());
+        assert_eq!(reader.rows_read, 6);
+    }
+
+    /// The declared row count is trusted at `open`
+    /// (`open_does_not_cross_check_num_rows_against_the_data`) and enforced here.
+    /// This is the only place it is ever checked.
+    #[test]
+    fn a_part_holding_fewer_rows_than_declared_is_corrupt() {
+        let (_root, dir) = numeric_part(5, &[&[1, 2]], &[&[1.0, 2.0]]);
+        let mut reader = PartReader::open(&dir, &["id", "score"]).unwrap();
+
+        assert_eq!(reader.next_block().unwrap().unwrap().num_rows(), 2);
+        let e = next_error(&mut reader);
+
+        assert!(matches!(e, PartError::Corrupt(_)), "{e:?}");
+        assert_eq!(
+            e.to_string(),
+            "corrupt part: part truncated: schema declares 5 rows, files contain 2"
+        );
+    }
+
+    /// The check runs only once every reader has ended, so the short block is
+    /// handed to the caller *before* the part is known to be broken. A consumer
+    /// that stops early — a future `LIMIT` — never learns of the damage.
+    /// Documents current behavior.
+    #[test]
+    fn the_truncation_check_runs_only_at_the_end_of_the_part() {
+        let (_root, dir) = numeric_part(5, &[&[1, 2]], &[&[1.0, 2.0]]);
+        let mut reader = PartReader::open(&dir, &["id", "score"]).unwrap();
+
+        let block = reader.next_block().unwrap().unwrap();
+
+        assert_eq!(block.column("id"), Some(&Column::Int64(vec![1, 2])));
+    }
+
+    /// Empty files with a positive `num_rows` fail on the very first call rather
+    /// than passing for an empty part.
+    #[test]
+    fn a_part_with_empty_files_but_declared_rows_is_corrupt() {
+        let (_root, dir) = numeric_part(3, &[], &[]);
+        let mut reader = PartReader::open(&dir, &["id", "score"]).unwrap();
+
+        assert!(next_err(&mut reader).contains("schema declares 3 rows, files contain 0"));
+    }
+
+    /// The check is an equality, not a floor — surplus data is as much a mismatch
+    /// as missing data. Note the message still says "truncated"; see the note
+    /// below. Documents current behavior.
+    #[test]
+    fn a_part_holding_more_rows_than_declared_is_corrupt() {
+        let (_root, dir) = numeric_part(1, &[&[1, 2, 3]], &[&[1.0, 2.0, 3.0]]);
+        let mut reader = PartReader::open(&dir, &["id", "score"]).unwrap();
+
+        assert_eq!(reader.next_block().unwrap().unwrap().num_rows(), 3);
+
+        assert!(
+            next_err(&mut reader)
+                .contains("part truncated: schema declares 1 rows, files contain 3")
+        );
+    }
+
+    /// The files stay at EOF and `rows_read` stops moving, so the failure is
+    /// stable rather than degrading into a different one.
+    #[test]
+    fn the_truncation_error_repeats_on_a_subsequent_call() {
+        let (_root, dir) = numeric_part(5, &[&[1, 2]], &[&[1.0, 2.0]]);
+        let mut reader = PartReader::open(&dir, &["id", "score"]).unwrap();
+        reader.next_block().unwrap().unwrap();
+
+        let first = next_err(&mut reader);
+        let second = next_err(&mut reader);
+
+        assert_eq!(first, second);
+    }
+
+    // ---- next_block: cross-column desync --------------------------------
+
+    /// Column files advance in lockstep or the part is corrupt. This check is also
+    /// what keeps `Block::new`'s length assert from firing — without it a
+    /// mismatched part would panic instead of returning an error.
+    #[test]
+    fn a_shorter_chunk_in_a_later_column_is_out_of_sync() {
+        let (_root, dir) = numeric_part(2, &[&[1, 2]], &[&[1.0]]);
+        let mut reader = PartReader::open(&dir, &["id", "score"]).unwrap();
+
+        let e = next_error(&mut reader);
+
+        assert!(matches!(e, PartError::Corrupt(_)), "{e:?}");
+        assert_eq!(
+            e.to_string(),
+            "corrupt part: column files out of sync: 'score' chunk has 1 rows, expected 2"
+        );
+    }
+
+    /// `len` is set by the first column that produced a chunk and never revisited,
+    /// so when the *earlier* column is the damaged one the message blames the
+    /// healthy one. Documents current behavior.
+    #[test]
+    fn the_first_column_in_schema_order_defines_the_expected_length() {
+        let (_root, dir) = numeric_part(2, &[&[1]], &[&[1.0, 2.0]]);
+        let mut reader = PartReader::open(&dir, &["id", "score"]).unwrap();
+
+        assert!(
+            next_err(&mut reader).contains("'score' chunk has 2 rows, expected 1"),
+            "the earlier column wins even when it is the broken one"
+        );
+    }
+
+    /// `StringColumn::len()` is `offsets.len() - 1`, a different computation from
+    /// `Vec::len` — the sync check has to see through both.
+    #[test]
+    fn desync_between_a_numeric_and_a_string_column_is_detected() {
+        let schema = vec![col("id", DataType::Int64), col("name", DataType::String)];
+        let (_root, dir) = hand_built_part(2, &schema);
+        append_chunk(&dir, "id", &Column::Int64(vec![1, 2]));
+        append_chunk(&dir, "name", &Column::String(string_column(&["x"])));
+        let mut reader = PartReader::open(&dir, &["id", "name"]).unwrap();
+
+        assert!(next_err(&mut reader).contains("'name' chunk has 1 rows, expected 2"));
+    }
+
+    /// With two columns disagreeing, the earlier one in schema order is reported —
+    /// the scan short-circuits rather than collecting every mismatch.
+    #[test]
+    fn the_first_disagreeing_column_is_the_one_reported() {
+        let (_root, dir) = hand_built_part(3, &sample_schema());
+        append_chunk(&dir, "id", &Column::Int64(vec![1, 2, 3]));
+        append_chunk(&dir, "name", &Column::String(string_column(&["x"])));
+        append_chunk(&dir, "score", &Column::Float64(vec![1.0, 2.0]));
+        let mut reader = PartReader::open(&dir, &["id", "name", "score"]).unwrap();
+
+        assert!(next_err(&mut reader).contains("'name' chunk has 1 rows, expected 3"));
+    }
+
+    /// One file running out while another still has chunks is corruption, not the
+    /// end of the part — the distinction between `ended == readers.len()` and
+    /// anything less.
+    #[test]
+    fn a_column_file_that_ends_early_is_out_of_sync() {
+        let (_root, dir) = numeric_part(4, &[&[1, 2], &[3, 4]], &[&[1.0, 2.0]]);
+        let mut reader = PartReader::open(&dir, &["id", "score"]).unwrap();
+
+        assert_eq!(reader.next_block().unwrap().unwrap().num_rows(), 2);
+        let e = next_error(&mut reader);
+
+        assert!(matches!(e, PartError::Corrupt(_)), "{e:?}");
+        assert_eq!(
+            e.to_string(),
+            "corrupt part: column files out of sync: some ended, some continue"
+        );
+    }
+
+    /// The mirror image: a surplus chunk in a later column fails the same way a
+    /// missing one does.
+    #[test]
+    fn a_column_file_with_a_surplus_chunk_is_out_of_sync() {
+        let (_root, dir) = numeric_part(2, &[&[1, 2]], &[&[1.0, 2.0], &[3.0]]);
+        let mut reader = PartReader::open(&dir, &["id", "score"]).unwrap();
+
+        assert_eq!(reader.next_block().unwrap().unwrap().num_rows(), 2);
+
+        assert!(next_err(&mut reader).contains("some ended, some continue"));
+    }
+
+    /// Error precedence: the declared-row-count check lives on the arm where
+    /// *every* reader ended, so a part that is both desynced and short reports the
+    /// desync. The stronger signal about the file layout wins.
+    #[test]
+    fn an_out_of_sync_part_is_reported_before_the_truncation_check() {
+        let (_root, dir) = numeric_part(99, &[&[1, 2], &[3]], &[&[1.0, 2.0]]);
+        let mut reader = PartReader::open(&dir, &["id", "score"]).unwrap();
+        reader.next_block().unwrap().unwrap();
+
+        let message = next_err(&mut reader);
+
+        assert!(message.contains("some ended, some continue"), "{message}");
+        assert!(!message.contains("part truncated"), "{message}");
+    }
+
+    // ---- next_block: codec errors ---------------------------------------
+
+    /// Nothing is decoded at open time (`open_does_not_validate_column_file_contents`),
+    /// so undecodable bytes surface here — as `Codec`, not as `Corrupt`. Five
+    /// bytes is deliberate: a longer run would be read as a header and take a
+    /// different branch.
+    #[test]
+    fn garbage_in_a_column_file_is_a_codec_error() {
+        let (_root, dir) = numeric_part(0, &[], &[]);
+        append_raw(&dir, "id.bin", &[1, 2, 3, 4, 5]);
+        let mut reader = PartReader::open(&dir, &["id"]).unwrap();
+
+        let e = next_error(&mut reader);
+
+        assert!(matches!(e, PartError::Codec(_)), "{e:?}");
+        assert!(e.to_string().contains("truncated header: got 5 of 8 bytes"));
+    }
+
+    /// A torn tail is a *codec* truncation, not the `part truncated` row-count
+    /// mismatch. The two failures share a word and nothing else; conflating them
+    /// would send an operator looking for the wrong damage.
+    #[test]
+    fn a_torn_final_chunk_is_a_codec_error() {
+        let (_root, dir) = written_part(3);
+        truncate_by(&dir, "id.bin", 4);
+        let mut reader = PartReader::open(&dir, &["id"]).unwrap();
+
+        let e = next_error(&mut reader);
+
+        assert!(matches!(e, PartError::Codec(_)), "{e:?}");
+        assert!(e.to_string().contains("truncated body"), "{e}");
+        assert!(!e.to_string().contains("part truncated"), "{e}");
+    }
+
+    /// `PartError::Codec` is `#[error(transparent)]`, so a codec failure keeps
+    /// `CodecError`'s own `corrupt block: ` prefix and never gains the
+    /// `corrupt part: ` one. Pins the wrapping any message assertion depends on.
+    #[test]
+    fn codec_errors_render_as_corrupt_block_not_corrupt_part() {
+        let (_root, dir) = numeric_part(0, &[], &[]);
+        append_raw(&dir, "id.bin", &[1, 2, 3, 4, 5]);
+        let mut reader = PartReader::open(&dir, &["id"]).unwrap();
+
+        let e = next_error(&mut reader);
+
+        assert!(matches!(e, PartError::Codec(_)), "{e:?}");
+        assert!(e.to_string().starts_with("corrupt block: "), "{e}");
+    }
+
+    /// Framing-level damage is caught by `read_block`; this is the layer above it,
+    /// where a well-framed chunk holds the wrong number of bytes for its element
+    /// type. Both reach the caller unmodified.
+    #[test]
+    fn a_chunk_of_the_wrong_element_width_is_a_codec_error() {
+        let (_root, dir) = numeric_part(0, &[], &[]);
+        append_raw(&dir, "id.bin", &framed(&[0u8; 12]));
+        let mut reader = PartReader::open(&dir, &["id"]).unwrap();
+
+        let e = next_error(&mut reader);
+
+        assert!(matches!(e, PartError::Codec(_)), "{e:?}");
+        assert!(
+            e.to_string()
+                .contains("i64 chunk of 12 bytes is not a multiple of 8")
+        );
+    }
+
+    /// A string column's two files can desync between themselves, independently of
+    /// the cross-column check. That belongs to `read_str_chunk`, and `next_block`
+    /// passes it through rather than reclassifying it as its own out-of-sync error.
+    #[test]
+    fn string_stream_desync_surfaces_as_a_codec_error() {
+        let (_root, dir) = hand_built_part(1, &[col("name", DataType::String)]);
+        append_chunk(&dir, "name", &Column::String(string_column(&["x"])));
+        append_raw(&dir, "name.data.bin", &framed(b"y"));
+        let mut reader = PartReader::open(&dir, &["name"]).unwrap();
+
+        assert_eq!(reader.next_block().unwrap().unwrap().num_rows(), 1);
+        let e = next_error(&mut reader);
+
+        assert!(matches!(e, PartError::Codec(_)), "{e:?}");
+        assert!(
+            e.to_string()
+                .contains("string streams out of sync: data present, offsets ended")
+        );
+    }
+
+    /// The `?` inside the loop fires before the `(ended, columns.len())` match, so
+    /// a decode failure outranks the out-of-sync bookkeeping even when an earlier
+    /// column has already ended.
+    #[test]
+    fn a_codec_error_outranks_the_out_of_sync_check() {
+        let schema = vec![col("id", DataType::Int64), col("name", DataType::String)];
+        let (_root, dir) = hand_built_part(1, &schema);
+        append_chunk(&dir, "id", &Column::Int64(vec![1]));
+        append_chunk(&dir, "name", &Column::String(string_column(&["x"])));
+        append_raw(&dir, "name.data.bin", &framed(b"y"));
+        let mut reader = PartReader::open(&dir, &["id", "name"]).unwrap();
+        reader.next_block().unwrap().unwrap();
+
+        let e = next_error(&mut reader);
+
+        assert!(matches!(e, PartError::Codec(_)), "{e:?}");
+        assert!(!e.to_string().contains("some ended"), "{e}");
+    }
+
+    /// Codec failures short-circuit in schema order too — the loop stops at the
+    /// first broken column rather than reporting the last.
+    #[test]
+    fn an_error_in_an_earlier_column_short_circuits_later_ones() {
+        let (_root, dir) = numeric_part(0, &[], &[]);
+        append_raw(&dir, "id.bin", &framed(&[0u8; 12]));
+        append_raw(&dir, "score.bin", &framed(&[0u8; 12]));
+        let mut reader = PartReader::open(&dir, &["id", "score"]).unwrap();
+
+        let message = next_err(&mut reader);
+
+        assert!(message.contains("i64 chunk"), "{message}");
+        assert!(!message.contains("f64 chunk"), "{message}");
+    }
+
+    // ---- next_block: state after a failure ------------------------------
+
+    /// The sharpest consequence of there being no failure fuse. The first call
+    /// fails on `name` and returns before `score` is ever read, leaving the three
+    /// files at different chunk offsets. The second call then finds three chunks
+    /// that happen to agree on length and builds a perfectly valid-looking block
+    /// out of rows from two different row groups: `score` here belongs to the
+    /// *first* group, not to `id=3` / `name="y"`.
+    ///
+    /// A caller that logs the error and keeps going gets silently wrong data
+    /// rather than a repeated failure. Documents current behavior.
+    #[test]
+    fn a_block_read_after_an_error_can_mix_misaligned_chunks() {
+        let (_root, dir) = hand_built_part(3, &sample_schema());
+        append_chunk(&dir, "id", &Column::Int64(vec![1, 2]));
+        append_chunk(&dir, "id", &Column::Int64(vec![3]));
+        append_chunk(&dir, "name", &Column::String(string_column(&["x"])));
+        append_chunk(&dir, "name", &Column::String(string_column(&["y"])));
+        append_chunk(&dir, "score", &Column::Float64(vec![9.0]));
+        let mut reader = PartReader::open(&dir, &["id", "name", "score"]).unwrap();
+
+        assert!(next_err(&mut reader).contains("'name' chunk has 1 rows, expected 2"));
+        let block = reader.next_block().unwrap().unwrap();
+
+        assert_eq!(block.num_rows(), 1);
+        assert_eq!(block.column("id"), Some(&Column::Int64(vec![3])));
+        assert_eq!(strs(&block, "name"), vec!["y"]);
+        assert_eq!(block.column("score"), Some(&Column::Float64(vec![9.0])));
+    }
+
+    /// There is no poison flag, so a failed reader is not fused: the next call
+    /// reports whatever the files say now, which is a *different* error.
+    /// Documents current behavior.
+    #[test]
+    fn a_reader_is_not_fused_after_an_out_of_sync_error() {
+        let (_root, dir) = numeric_part(4, &[&[1, 2], &[3, 4]], &[&[1.0, 2.0]]);
+        let mut reader = PartReader::open(&dir, &["id", "score"]).unwrap();
+        reader.next_block().unwrap().unwrap();
+
+        assert!(next_err(&mut reader).contains("some ended, some continue"));
+        assert!(next_err(&mut reader).contains("part truncated"));
+    }
+
+    /// `rows_read` moves only on the success arm, so the count quoted in the
+    /// truncation message counts rows actually handed to the caller.
+    #[test]
+    fn the_row_counter_does_not_advance_on_a_failed_read() {
+        let (_root, dir) = numeric_part(2, &[&[1, 2]], &[&[1.0]]);
+        let mut reader = PartReader::open(&dir, &["id", "score"]).unwrap();
+
+        next_error(&mut reader);
+
+        assert_eq!(reader.rows_read, 0);
+    }
+
+    // ---- next_block: pinned current behavior ----------------------------
+
+    /// `opens_a_column_with_an_empty_name` carried through to the read path: the
+    /// file is literally named `.bin` and decodes like any other.
+    /// Documents current behavior.
+    #[test]
+    fn a_column_with_an_empty_name_can_be_read() {
+        let (_root, dir) = part_dir();
+        let mut writer = PartWriter::new(dir.clone(), &[col("", DataType::Int64)]).unwrap();
+        writer
+            .write_block(&Block::new(
+                vec![("".to_string(), Column::Int64(vec![7]))],
+                1,
+            ))
+            .unwrap();
+        writer.finish().unwrap();
+
+        let mut reader = PartReader::open(&dir, &[""]).unwrap();
+        let block = reader.next_block().unwrap().unwrap();
+
+        assert_eq!(block.column(""), Some(&Column::Int64(vec![7])));
+        assert!(reader.next_block().unwrap().is_none());
+    }
+
+    /// `num_rows` is header state and `rows_read` is cursor state; only the latter
+    /// moves. Reading must not "fix up" a part's declared size.
+    #[test]
+    fn next_block_does_not_mutate_the_declared_row_count() {
+        let (_root, dir) = written_part_blocks(&[2, 1]);
+        let mut reader = PartReader::open(&dir, &["id"]).unwrap();
+
+        while reader.next_block().unwrap().is_some() {
+            assert_eq!(reader.num_rows, 3);
+        }
+        assert_eq!(reader.num_rows, 3);
+    }
+
+    // Note: several `next_block` paths are deliberately untested.
+    //
+    // `PartError::Io` — reads go through `File`, and `read_block` already maps
+    // `UnexpectedEof` to `Corrupt`, so no ordinary filesystem produces a mid-read
+    // `io::Error`. `codec.rs` carries the same note.
+    //
+    // The `(e, 0) if e == self.readers.len()` guard evaluating false — the loop
+    // maintains `columns.len() + ended == readers.len()`, so `columns.len() == 0`
+    // forces `ended == readers.len()`. No fixture can tell the guarded arm from an
+    // unguarded one.
+    //
+    // A chunk at `MAX_BLOCK_SIZE` — constructible, but slow here and already
+    // pinned at the boundary in `codec.rs` and `column_io.rs`.
+    //
+    // `Block::new`'s length assert firing from inside `next_block` — the length
+    // check makes it unreachable, which is the point of the check.
+    //
+    // The `unreachable!("reader shape mismatch")` and `expect("non-empty readers")`
+    // arms — both are unreachable through `open`, and reaching them would mean
+    // building a `PartReader` from its private fields, pinning the struct's layout
+    // rather than its behavior.
 }
