@@ -9,6 +9,7 @@ mod helpers;
 mod part_reader;
 mod part_writer;
 pub mod query;
+mod storage_error;
 mod string_column;
 mod table;
 mod value;

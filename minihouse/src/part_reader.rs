@@ -1,5 +1,5 @@
-use crate::codec::CodecError;
 use crate::column_io::{read_f64_chunk, read_i64_chunk, read_str_chunk};
+use crate::storage_error::StorageError;
 use crate::{Block, Column, DataType};
 use std::fs;
 use std::fs::File;
@@ -22,7 +22,7 @@ enum ColumnReaders {
 }
 
 impl PartReader {
-    pub(crate) fn open(dir: &Path, columns: &[&str]) -> Result<PartReader, PartError> {
+    pub(crate) fn open(dir: &Path, columns: &[&str]) -> Result<PartReader, StorageError> {
         assert!(
             !columns.is_empty(),
             "PartReader: empty column projection not supported yet — see backlog (count via mask)"
@@ -37,13 +37,13 @@ impl PartReader {
         }
 
         if !dir.is_dir() {
-            return Err(PartError::NotFound(dir.to_path_buf()));
+            return Err(StorageError::NotFound(dir.to_path_buf()));
         }
 
         let text = match fs::read_to_string(dir.join("schema.txt")) {
             Ok(text) => text,
             Err(err) if err.kind() == ErrorKind::NotFound => {
-                return Err(PartError::Corrupt("schema.txt missing".into()));
+                return Err(StorageError::Corrupt("schema.txt missing".into()));
             }
             Err(err) => return Err(err.into()),
         };
@@ -56,7 +56,7 @@ impl PartReader {
                 let idx = schema
                     .iter()
                     .position(|(n, _)| n == name)
-                    .ok_or_else(|| PartError::ColumnNotFound(name.to_string()))?;
+                    .ok_or_else(|| StorageError::ColumnNotFound(name.to_string()))?;
                 let reader = match schema[idx].1 {
                     DataType::Int64 | DataType::Float64 => {
                         ColumnReaders::Single(open_file(dir, &format!("{name}.bin"))?)
@@ -69,7 +69,7 @@ impl PartReader {
 
                 Ok((idx, reader))
             })
-            .collect::<Result<Vec<_>, PartError>>()?;
+            .collect::<Result<Vec<_>, StorageError>>()?;
         readers.sort_by_key(|(idx, _)| *idx);
 
         Ok(PartReader {
@@ -80,7 +80,7 @@ impl PartReader {
         })
     }
 
-    pub(crate) fn next_block(&mut self) -> Result<Option<Block>, PartError> {
+    pub(crate) fn next_block(&mut self) -> Result<Option<Block>, StorageError> {
         let mut columns: Vec<(String, Column)> = Vec::with_capacity(self.readers.len());
         let mut len: Option<usize> = None;
         let mut ended = 0usize;
@@ -108,7 +108,7 @@ impl PartReader {
                     match len {
                         None => len = Some(c.len()),
                         Some(l) if l != c.len() => {
-                            return Err(PartError::Corrupt(format!(
+                            return Err(StorageError::Corrupt(format!(
                                 "column files out of sync: '{name}' chunk has {} rows, expected {l}",
                                 c.len()
                             )));
@@ -129,43 +129,43 @@ impl PartReader {
             (e, 0) if e == self.readers.len() => {
                 // все кончились — финальная сверка
                 if self.rows_read != self.num_rows {
-                    return Err(PartError::Corrupt(format!(
+                    return Err(StorageError::Corrupt(format!(
                         "part truncated: schema declares {} rows, files contain {}",
                         self.num_rows, self.rows_read
                     )));
                 }
                 Ok(None)
             }
-            _ => Err(PartError::Corrupt(
+            _ => Err(StorageError::Corrupt(
                 "column files out of sync: some ended, some continue".into(),
             )),
         }
     }
 }
 
-fn open_file(dir: &Path, name: &str) -> Result<BufReader<File>, PartError> {
+fn open_file(dir: &Path, name: &str) -> Result<BufReader<File>, StorageError> {
     match File::open(dir.join(name)) {
         Ok(file) => Ok(BufReader::new(file)),
-        Err(e) if e.kind() == ErrorKind::NotFound => {
-            Err(PartError::Corrupt(format!("column file '{name}' missing")))
-        }
+        Err(e) if e.kind() == ErrorKind::NotFound => Err(StorageError::Corrupt(format!(
+            "column file '{name}' missing"
+        ))),
         Err(err) => Err(err.into()),
     }
 }
 
-fn parse_schema(text: &str) -> Result<(Vec<(String, DataType)>, usize), PartError> {
+fn parse_schema(text: &str) -> Result<(Vec<(String, DataType)>, usize), StorageError> {
     if text.is_empty() {
-        return Err(PartError::Corrupt("empty schema".into()));
+        return Err(StorageError::Corrupt("empty schema".into()));
     }
 
     let mut lines = text.lines();
     let version = lines
         .next()
-        .ok_or_else(|| PartError::Corrupt("missing version line".into()))?
+        .ok_or_else(|| StorageError::Corrupt("missing version line".into()))?
         .strip_prefix("version=")
-        .ok_or_else(|| PartError::Corrupt("invalid version line".into()))?;
+        .ok_or_else(|| StorageError::Corrupt("invalid version line".into()))?;
     if version != "1" {
-        return Err(PartError::UnsupportedVersion {
+        return Err(StorageError::UnsupportedVersion {
             found: version.to_string(),
             expected: 1,
         });
@@ -173,22 +173,24 @@ fn parse_schema(text: &str) -> Result<(Vec<(String, DataType)>, usize), PartErro
 
     let num_rows = lines
         .next()
-        .ok_or_else(|| PartError::Corrupt("missing num rows line".into()))?
+        .ok_or_else(|| StorageError::Corrupt("missing num rows line".into()))?
         .strip_prefix("num_rows=")
-        .ok_or_else(|| PartError::Corrupt("invalid num rows line".into()))?
+        .ok_or_else(|| StorageError::Corrupt("invalid num rows line".into()))?
         .parse::<usize>()
-        .map_err(|_| PartError::Corrupt("invalid num rows".into()))?;
+        .map_err(|_| StorageError::Corrupt("invalid num rows".into()))?;
 
     let schema = lines
         .enumerate()
         .map(|(i, l)| {
             let line_no = i + 3;
             l.strip_prefix("column=")
-                .ok_or_else(|| PartError::Corrupt(format!("line {line_no}: expected column=...")))
+                .ok_or_else(|| {
+                    StorageError::Corrupt(format!("line {line_no}: expected column=..."))
+                })
                 .and_then(|d| {
                     d.split_once(':')
                         .ok_or_else(|| {
-                            PartError::Corrupt(format!(
+                            StorageError::Corrupt(format!(
                                 "line {line_no}: expected column=<name>:<type>"
                             ))
                         })
@@ -197,24 +199,24 @@ fn parse_schema(text: &str) -> Result<(Vec<(String, DataType)>, usize), PartErro
                                 .parse::<DataType>()
                                 .map(|dt| (name.to_string(), dt))
                                 .map_err(|_| {
-                                    PartError::Corrupt(format!(
+                                    StorageError::Corrupt(format!(
                                         "line {line_no}: invalid data type '{type_str}'"
                                     ))
                                 })
                         })
                 })
         })
-        .collect::<Result<Vec<(String, DataType)>, PartError>>()?;
+        .collect::<Result<Vec<(String, DataType)>, StorageError>>()?;
 
     if schema.is_empty() && num_rows > 0 {
-        return Err(PartError::Corrupt(format!(
+        return Err(StorageError::Corrupt(format!(
             "num_rows={num_rows} but schema has no columns"
         )));
     }
 
     for i in 1..schema.len() {
         if schema[..i].iter().any(|(n, _)| n == &schema[i].0) {
-            return Err(PartError::Corrupt(format!(
+            return Err(StorageError::Corrupt(format!(
                 "duplicate column name '{}'",
                 schema[i].0
             )));
@@ -222,22 +224,6 @@ fn parse_schema(text: &str) -> Result<(Vec<(String, DataType)>, usize), PartErro
     }
 
     Ok((schema, num_rows))
-}
-
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum PartError {
-    #[error("part not found: {0}")]
-    NotFound(PathBuf),
-    #[error("unsupported part version {found}, expected {expected}")]
-    UnsupportedVersion { found: String, expected: u32 },
-    #[error("corrupt part: {0}")]
-    Corrupt(String),
-    #[error(transparent)]
-    Codec(#[from] CodecError),
-    #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("column '{0}' not found in part schema")]
-    ColumnNotFound(String),
 }
 
 #[cfg(test)]
@@ -252,7 +238,7 @@ mod tests {
     use std::io::Write;
     use tempfile::TempDir;
 
-    /// Every failure path returns `PartError`; tests assert on the rendered message.
+    /// Every failure path returns `StorageError`; tests assert on the rendered message.
     fn err(text: &str) -> String {
         parse_schema(text).unwrap_err().to_string()
     }
@@ -334,7 +320,7 @@ mod tests {
 
     /// The error from an `open` that must fail. `unwrap_err` is unavailable —
     /// `PartReader` holds open file handles and deliberately has no `Debug`.
-    fn open_error(dir: &Path, columns: &[&str]) -> PartError {
+    fn open_error(dir: &Path, columns: &[&str]) -> StorageError {
         match PartReader::open(dir, columns) {
             Ok(_) => panic!("expected opening {dir:?} with {columns:?} to fail"),
             Err(e) => e,
@@ -464,10 +450,10 @@ mod tests {
     fn rejects_unsupported_version() {
         let e = parse_schema("version=2\nnum_rows=0\n").unwrap_err();
 
-        assert_eq!(e.to_string(), "unsupported part version 2, expected 1");
+        assert_eq!(e.to_string(), "unsupported format version 2, expected 1");
         assert!(matches!(
             e,
-            PartError::UnsupportedVersion { ref found, expected: 1 } if found == "2"
+            StorageError::UnsupportedVersion { ref found, expected: 1 } if found == "2"
         ));
     }
 
@@ -477,7 +463,7 @@ mod tests {
 
         assert!(matches!(
             e,
-            PartError::UnsupportedVersion { ref found, expected: 1 } if found.is_empty()
+            StorageError::UnsupportedVersion { ref found, expected: 1 } if found.is_empty()
         ));
     }
 
@@ -490,7 +476,7 @@ mod tests {
 
         assert!(matches!(
             e,
-            PartError::UnsupportedVersion { ref found, expected: 1 } if found == "1 "
+            StorageError::UnsupportedVersion { ref found, expected: 1 } if found == "1 "
         ));
     }
 
@@ -802,10 +788,10 @@ mod tests {
         let e = open_error(&dir, &["id"]);
 
         assert!(
-            matches!(e, PartError::NotFound(ref p) if *p == dir),
+            matches!(e, StorageError::NotFound(ref p) if *p == dir),
             "{e:?}"
         );
-        assert!(e.to_string().starts_with("part not found: "));
+        assert!(e.to_string().starts_with("not found: "));
     }
 
     /// `is_dir` folds "wrong kind of thing" into the same error as "nothing
@@ -817,7 +803,7 @@ mod tests {
 
         let e = open_error(&dir, &["id"]);
 
-        assert!(matches!(e, PartError::NotFound(_)), "{e:?}");
+        assert!(matches!(e, StorageError::NotFound(_)), "{e:?}");
     }
 
     /// The payoff of the writer's staging directory: a part still being written is
@@ -830,7 +816,7 @@ mod tests {
 
         let e = open_error(&dir, &["id"]);
 
-        assert!(matches!(e, PartError::NotFound(_)), "{e:?}");
+        assert!(matches!(e, StorageError::NotFound(_)), "{e:?}");
     }
 
     /// Reaching past the staging directory's name does not get you a readable
@@ -853,7 +839,7 @@ mod tests {
 
         let e = open_error(&dir, &["id"]);
 
-        assert!(matches!(e, PartError::Corrupt(_)), "{e:?}");
+        assert!(matches!(e, StorageError::Corrupt(_)), "{e:?}");
         assert!(e.to_string().contains("schema.txt missing"));
     }
 
@@ -868,7 +854,7 @@ mod tests {
 
         let e = open_error(&dir, &["id"]);
 
-        assert!(matches!(e, PartError::Io(_)), "{e:?}");
+        assert!(matches!(e, StorageError::Io(_)), "{e:?}");
     }
 
     /// One representative case — `parse_schema` itself is covered exhaustively
@@ -880,7 +866,7 @@ mod tests {
         let e = open_error(&dir, &["id"]);
 
         assert!(
-            matches!(e, PartError::UnsupportedVersion { ref found, .. } if found == "2"),
+            matches!(e, StorageError::UnsupportedVersion { ref found, .. } if found == "2"),
             "{e:?}"
         );
     }
@@ -894,10 +880,10 @@ mod tests {
         let e = open_error(&dir, &["nope"]);
 
         assert!(
-            matches!(e, PartError::ColumnNotFound(ref n) if n == "nope"),
+            matches!(e, StorageError::ColumnNotFound(ref n) if n == "nope"),
             "{e:?}"
         );
-        assert_eq!(e.to_string(), "column 'nope' not found in part schema");
+        assert_eq!(e.to_string(), "column 'nope' not found");
     }
 
     /// Names differing only in case are distinct columns, matching
@@ -954,8 +940,8 @@ mod tests {
 
         let e = open_error(&dir, &["id"]);
 
-        assert!(matches!(e, PartError::Corrupt(_)), "{e:?}");
-        assert_eq!(e.to_string(), "corrupt part: column file 'id.bin' missing");
+        assert!(matches!(e, StorageError::Corrupt(_)), "{e:?}");
+        assert_eq!(e.to_string(), "corrupt: column file 'id.bin' missing");
     }
 
     #[test]
@@ -1055,7 +1041,7 @@ mod tests {
 
         let e = open_error(&dir, &["id"]);
 
-        assert!(matches!(e, PartError::Io(_)), "{e:?}");
+        assert!(matches!(e, StorageError::Io(_)), "{e:?}");
     }
 
     // ---- `next_block` fixtures -----------------------------------------
@@ -1199,7 +1185,7 @@ mod tests {
     }
 
     /// The error from a `next_block` that must fail, mirroring `open_error`.
-    fn next_error(reader: &mut PartReader) -> PartError {
+    fn next_error(reader: &mut PartReader) -> StorageError {
         match reader.next_block() {
             Ok(block) => panic!("expected next_block to fail, got {block:?}"),
             Err(e) => e,
@@ -1535,10 +1521,10 @@ mod tests {
         assert_eq!(reader.next_block().unwrap().unwrap().num_rows(), 2);
         let e = next_error(&mut reader);
 
-        assert!(matches!(e, PartError::Corrupt(_)), "{e:?}");
+        assert!(matches!(e, StorageError::Corrupt(_)), "{e:?}");
         assert_eq!(
             e.to_string(),
-            "corrupt part: part truncated: schema declares 5 rows, files contain 2"
+            "corrupt: part truncated: schema declares 5 rows, files contain 2"
         );
     }
 
@@ -1608,10 +1594,10 @@ mod tests {
 
         let e = next_error(&mut reader);
 
-        assert!(matches!(e, PartError::Corrupt(_)), "{e:?}");
+        assert!(matches!(e, StorageError::Corrupt(_)), "{e:?}");
         assert_eq!(
             e.to_string(),
-            "corrupt part: column files out of sync: 'score' chunk has 1 rows, expected 2"
+            "corrupt: column files out of sync: 'score' chunk has 1 rows, expected 2"
         );
     }
 
@@ -1666,10 +1652,10 @@ mod tests {
         assert_eq!(reader.next_block().unwrap().unwrap().num_rows(), 2);
         let e = next_error(&mut reader);
 
-        assert!(matches!(e, PartError::Corrupt(_)), "{e:?}");
+        assert!(matches!(e, StorageError::Corrupt(_)), "{e:?}");
         assert_eq!(
             e.to_string(),
-            "corrupt part: column files out of sync: some ended, some continue"
+            "corrupt: column files out of sync: some ended, some continue"
         );
     }
 
@@ -1714,7 +1700,7 @@ mod tests {
 
         let e = next_error(&mut reader);
 
-        assert!(matches!(e, PartError::Codec(_)), "{e:?}");
+        assert!(matches!(e, StorageError::Codec(_)), "{e:?}");
         assert!(e.to_string().contains("truncated header: got 5 of 8 bytes"));
     }
 
@@ -1729,23 +1715,23 @@ mod tests {
 
         let e = next_error(&mut reader);
 
-        assert!(matches!(e, PartError::Codec(_)), "{e:?}");
+        assert!(matches!(e, StorageError::Codec(_)), "{e:?}");
         assert!(e.to_string().contains("truncated body"), "{e}");
         assert!(!e.to_string().contains("part truncated"), "{e}");
     }
 
-    /// `PartError::Codec` is `#[error(transparent)]`, so a codec failure keeps
+    /// `StorageError::Codec` is `#[error(transparent)]`, so a codec failure keeps
     /// `CodecError`'s own `corrupt block: ` prefix and never gains the
-    /// `corrupt part: ` one. Pins the wrapping any message assertion depends on.
+    /// `corrupt: ` one. Pins the wrapping any message assertion depends on.
     #[test]
-    fn codec_errors_render_as_corrupt_block_not_corrupt_part() {
+    fn codec_errors_render_as_corrupt_block_not_corrupt() {
         let (_root, dir) = numeric_part(0, &[], &[]);
         append_raw(&dir, "id.bin", &[1, 2, 3, 4, 5]);
         let mut reader = PartReader::open(&dir, &["id"]).unwrap();
 
         let e = next_error(&mut reader);
 
-        assert!(matches!(e, PartError::Codec(_)), "{e:?}");
+        assert!(matches!(e, StorageError::Codec(_)), "{e:?}");
         assert!(e.to_string().starts_with("corrupt block: "), "{e}");
     }
 
@@ -1760,7 +1746,7 @@ mod tests {
 
         let e = next_error(&mut reader);
 
-        assert!(matches!(e, PartError::Codec(_)), "{e:?}");
+        assert!(matches!(e, StorageError::Codec(_)), "{e:?}");
         assert!(
             e.to_string()
                 .contains("i64 chunk of 12 bytes is not a multiple of 8")
@@ -1780,7 +1766,7 @@ mod tests {
         assert_eq!(reader.next_block().unwrap().unwrap().num_rows(), 1);
         let e = next_error(&mut reader);
 
-        assert!(matches!(e, PartError::Codec(_)), "{e:?}");
+        assert!(matches!(e, StorageError::Codec(_)), "{e:?}");
         assert!(
             e.to_string()
                 .contains("string streams out of sync: data present, offsets ended")
@@ -1802,7 +1788,7 @@ mod tests {
 
         let e = next_error(&mut reader);
 
-        assert!(matches!(e, PartError::Codec(_)), "{e:?}");
+        assert!(matches!(e, StorageError::Codec(_)), "{e:?}");
         assert!(!e.to_string().contains("some ended"), "{e}");
     }
 
@@ -1915,7 +1901,7 @@ mod tests {
 
     // Note: several `next_block` paths are deliberately untested.
     //
-    // `PartError::Io` — reads go through `File`, and `read_block` already maps
+    // `StorageError::Io` — reads go through `File`, and `read_block` already maps
     // `UnexpectedEof` to `Corrupt`, so no ordinary filesystem produces a mid-read
     // `io::Error`. `codec.rs` carries the same note.
     //
