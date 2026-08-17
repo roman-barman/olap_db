@@ -127,7 +127,6 @@ impl PartReader {
                 Ok(Some(Block::new(columns, len)))
             }
             (e, 0) if e == self.readers.len() => {
-                // все кончились — финальная сверка
                 if self.rows_read != self.num_rows {
                     return Err(StorageError::Corrupt(format!(
                         "part truncated: schema declares {} rows, files contain {}",

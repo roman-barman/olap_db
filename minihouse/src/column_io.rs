@@ -1,15 +1,19 @@
-use crate::codec::{CodecError, MAX_BLOCK_SIZE, read_block, write_block};
+use crate::codec::{Codec, CodecError, MAX_BLOCK_SIZE, read_block, write_block};
 use crate::string_column::StringColumn;
 use std::io::{Read, Write};
 
-pub(crate) fn write_i64_chunk(w: &mut impl Write, values: &[i64]) -> Result<(), CodecError> {
+pub(crate) fn write_i64_chunk(
+    w: &mut impl Write,
+    values: &[i64],
+    codec: Codec,
+) -> Result<(), CodecError> {
     let block_size = values.len() * size_of::<i64>();
     let mut bytes = Vec::with_capacity(block_size);
     for v in values {
         bytes.extend_from_slice(&v.to_le_bytes());
     }
 
-    write_block(w, &bytes)
+    write_block(w, &bytes, codec)
 }
 
 pub(crate) fn read_i64_chunk(r: &mut impl Read) -> Result<Option<Vec<i64>>, CodecError> {
@@ -35,14 +39,18 @@ pub(crate) fn read_i64_chunk(r: &mut impl Read) -> Result<Option<Vec<i64>>, Code
     Ok(Some(values))
 }
 
-pub(crate) fn write_f64_chunk(w: &mut impl Write, values: &[f64]) -> Result<(), CodecError> {
+pub(crate) fn write_f64_chunk(
+    w: &mut impl Write,
+    values: &[f64],
+    codec: Codec,
+) -> Result<(), CodecError> {
     let block_size = values.len() * size_of::<f64>();
     let mut bytes = Vec::with_capacity(block_size);
     for v in values {
         bytes.extend_from_slice(&v.to_le_bytes());
     }
 
-    write_block(w, &bytes)
+    write_block(w, &bytes, codec)
 }
 
 pub(crate) fn read_f64_chunk(r: &mut impl Read) -> Result<Option<Vec<f64>>, CodecError> {
@@ -72,6 +80,7 @@ pub(crate) fn write_str_chunk(
     data_w: &mut impl Write,
     offsets_w: &mut impl Write,
     chunk: &StringColumn,
+    codec: Codec,
 ) -> Result<(), CodecError> {
     assert!(
         chunk.data_len() <= MAX_BLOCK_SIZE,
@@ -79,7 +88,7 @@ pub(crate) fn write_str_chunk(
         chunk.data_len()
     );
 
-    write_block(data_w, chunk.data())?;
+    write_block(data_w, chunk.data(), codec)?;
 
     let offset = chunk.offsets();
     let block_size = offset.len() * size_of::<u32>();
@@ -88,7 +97,7 @@ pub(crate) fn write_str_chunk(
         bytes.extend_from_slice(&v.to_le_bytes());
     }
 
-    write_block(offsets_w, &bytes)
+    write_block(offsets_w, &bytes, codec)
 }
 pub(crate) fn read_str_chunk(
     data_r: &mut impl Read,

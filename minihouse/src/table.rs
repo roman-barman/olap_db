@@ -1,5 +1,6 @@
 use crate::DataType;
 use crate::block::Block;
+use crate::codec::Codec;
 use crate::helpers;
 use crate::part_reader::PartReader;
 use crate::part_writer::PartWriter;
@@ -13,14 +14,19 @@ pub struct Table {
     schema: Vec<(String, DataType)>,
     dir: PathBuf,
     next_part_id: usize,
+    codec: Codec,
 }
 
 impl Table {
-    pub fn create(dir: PathBuf, schema: Vec<(String, DataType)>) -> Result<Self, StorageError> {
+    pub fn create(
+        dir: PathBuf,
+        schema: Vec<(String, DataType)>,
+        codec: Codec,
+    ) -> Result<Self, StorageError> {
         assert!(!schema.is_empty(), "Schema must have at least one column");
         helpers::assert_unique_names(&schema);
 
-        if dir.exists() {
+        if Path::is_dir(&dir) {
             return Err(StorageError::AlreadyExists(dir));
         }
 
@@ -28,6 +34,7 @@ impl Table {
         fs::create_dir_all(&dir)?;
         let mut schema_writer = BufWriter::new(File::create(schema_file)?);
         schema_writer.write_all(b"version=1\n")?;
+        writeln!(schema_writer, "codec={}", codec.as_str())?;
         for (name, data_type) in schema.iter() {
             writeln!(schema_writer, "column={}:{}", name, data_type.as_str())?;
         }
@@ -37,11 +44,12 @@ impl Table {
             schema,
             dir,
             next_part_id: 0,
+            codec,
         })
     }
 
     pub fn open(dir: PathBuf) -> Result<Table, StorageError> {
-        if !dir.exists() {
+        if !Path::is_dir(&dir) {
             return Err(StorageError::NotFound(dir));
         }
 
@@ -53,7 +61,7 @@ impl Table {
             Err(err) => return Err(err.into()),
         };
 
-        let schema = parse_schema(&text)?;
+        let (schema, codec) = parse_schema(&text)?;
         let parts = list_parts(&dir)?;
         let next_part_id = parts.last().map(|(id, _)| id + 1).unwrap_or(0);
 
@@ -61,6 +69,7 @@ impl Table {
             schema,
             dir,
             next_part_id,
+            codec,
         })
     }
 
@@ -98,10 +107,11 @@ impl Table {
         let mut writer = PartWriter::new(
             self.dir.join(part_dir_name(self.next_part_id)),
             &self.schema,
+            self.codec,
         )?;
 
         for block in blocks {
-            writer.write_block(&block)?;
+            writer.write_block(block)?;
         }
 
         writer.finish()?;
@@ -179,7 +189,7 @@ fn part_dir_name(id: usize) -> String {
     format!("part_{id:04}")
 }
 
-fn parse_schema(text: &str) -> Result<Vec<(String, DataType)>, StorageError> {
+fn parse_schema(text: &str) -> Result<(Vec<(String, DataType)>, Codec), StorageError> {
     if text.is_empty() {
         return Err(StorageError::Corrupt("empty schema".into()));
     }
@@ -197,10 +207,18 @@ fn parse_schema(text: &str) -> Result<Vec<(String, DataType)>, StorageError> {
         });
     }
 
+    let codec = lines
+        .next()
+        .ok_or_else(|| StorageError::Corrupt("missing codec line".into()))?
+        .strip_prefix("codec=")
+        .ok_or_else(|| StorageError::Corrupt("invalid codec line".into()))?
+        .parse::<Codec>()
+        .map_err(|e| StorageError::Corrupt(format!("line 2: {e}")))?;
+
     let schema = lines
         .enumerate()
         .map(|(i, l)| {
-            let line_no = i + 2;
+            let line_no = i + 3;
             l.strip_prefix("column=")
                 .ok_or_else(|| {
                     StorageError::Corrupt(format!("line {line_no}: expected column=..."))
@@ -235,7 +253,7 @@ fn parse_schema(text: &str) -> Result<Vec<(String, DataType)>, StorageError> {
         }
     }
 
-    Ok(schema)
+    Ok((schema, codec))
 }
 
 fn list_parts(dir: &Path) -> Result<Vec<(usize, PathBuf)>, StorageError> {

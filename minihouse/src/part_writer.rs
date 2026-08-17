@@ -1,4 +1,4 @@
-use crate::codec::CodecError;
+use crate::codec::{Codec, CodecError};
 use crate::column_io::{write_f64_chunk, write_i64_chunk, write_str_chunk};
 use crate::{Block, Column, DataType};
 use std::fs::File;
@@ -11,10 +11,15 @@ pub(crate) struct PartWriter {
     schema: Vec<(String, DataType)>,
     writers: Vec<ColumnFiles>,
     num_rows: usize,
+    codec: Codec,
 }
 
 impl PartWriter {
-    pub(crate) fn new(dir: PathBuf, schema: &[(String, DataType)]) -> std::io::Result<Self> {
+    pub(crate) fn new(
+        dir: PathBuf,
+        schema: &[(String, DataType)],
+        codec: Codec,
+    ) -> std::io::Result<Self> {
         let tmp_dir = {
             let mut name = dir
                 .file_name()
@@ -54,6 +59,7 @@ impl PartWriter {
             schema: schema.to_vec(),
             writers,
             num_rows: 0,
+            codec,
         })
     }
 
@@ -81,10 +87,10 @@ impl PartWriter {
             );
 
             match (files, column) {
-                (ColumnFiles::Single(w), Column::Int64(v)) => write_i64_chunk(w, v)?,
-                (ColumnFiles::Single(w), Column::Float64(v)) => write_f64_chunk(w, v)?,
+                (ColumnFiles::Single(w), Column::Int64(v)) => write_i64_chunk(w, v, self.codec)?,
+                (ColumnFiles::Single(w), Column::Float64(v)) => write_f64_chunk(w, v, self.codec)?,
                 (ColumnFiles::Pair { data, offsets }, Column::String(sc)) => {
-                    write_str_chunk(data, offsets, sc)?
+                    write_str_chunk(data, offsets, sc, self.codec)?
                 }
                 _ => unreachable!(
                     "column {i} ('{s_name}'): files/column shape mismatch — broken constructor"

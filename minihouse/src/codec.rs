@@ -1,5 +1,50 @@
 use lz4_flex::block::{compress, decompress, get_maximum_output_size};
 use std::io::{Read, Write};
+use std::str::FromStr;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Codec {
+    None = 0,
+    Lz4 = 1,
+}
+
+impl Codec {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Codec::None => "none",
+            Codec::Lz4 => "lz4",
+        }
+    }
+}
+
+impl FromStr for Codec {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "none" => Ok(Codec::None),
+            "lz4" => Ok(Codec::Lz4),
+            _ => Err(format!("invalid codec: {}", s)),
+        }
+    }
+}
+
+impl TryFrom<u8> for Codec {
+    type Error = CodecError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        const _: () = {
+            match Codec::None {
+                Codec::None | Codec::Lz4 => {}
+            }
+        };
+        match value {
+            x if x == Codec::None as u8 => Ok(Codec::None),
+            x if x == Codec::Lz4 as u8 => Ok(Codec::Lz4),
+            _ => Err(CodecError::Corrupt(format!("unknown codec byte {value}"))),
+        }
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CodecError {
@@ -11,17 +56,29 @@ pub(crate) enum CodecError {
 
 pub(crate) const MAX_BLOCK_SIZE: usize = 16 * 1024 * 1024;
 
-pub(crate) fn write_block(w: &mut impl Write, raw: &[u8]) -> Result<(), CodecError> {
+pub(crate) fn write_block(w: &mut impl Write, raw: &[u8], codec: Codec) -> Result<(), CodecError> {
     assert!(
         raw.len() <= MAX_BLOCK_SIZE,
         "write_block: {} bytes exceeds MAX_BLOCK_SIZE — caller bug",
         raw.len()
     );
 
-    let compressed = compress(raw);
+    let compressed_owned;
+    let (compressed, codec) = match codec {
+        Codec::Lz4 => {
+            compressed_owned = compress(raw);
+            if compressed_owned.len() >= raw.len() {
+                (raw, Codec::None)
+            } else {
+                (compressed_owned.as_slice(), Codec::Lz4)
+            }
+        }
+        Codec::None => (raw, Codec::None),
+    };
     let c_len = u32::try_from(compressed.len()).expect("compressed size exceeds u32");
     let r_len = u32::try_from(raw.len()).expect("raw size exceeds u32");
 
+    w.write_all(&[codec as u8])?;
     w.write_all(&c_len.to_le_bytes())?;
     w.write_all(&r_len.to_le_bytes())?;
     w.write_all(&compressed)?;
@@ -30,48 +87,71 @@ pub(crate) fn write_block(w: &mut impl Write, raw: &[u8]) -> Result<(), CodecErr
 }
 
 pub(crate) fn read_block(r: &mut impl Read) -> Result<Option<Vec<u8>>, CodecError> {
-    let mut header = [0u8; 8];
+    let mut header = [0u8; 9];
     let mut filled = 0;
-    while filled < 8 {
+    while filled < 9 {
         let n = r.read(&mut header[filled..])?;
         if n == 0 {
             return if filled == 0 {
-                Ok(None) // чистый EOF: блоков больше нет
+                Ok(None)
             } else {
                 Err(CodecError::Corrupt(format!(
-                    "truncated header: got {filled} of 8 bytes"
+                    "truncated header: got {filled} of 9 bytes"
                 )))
             };
         }
         filled += n;
     }
 
-    let c_len = u32::from_le_bytes(header[0..4].try_into().unwrap()) as usize;
-    let r_len = u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
+    let codec = Codec::try_from(header[0])?;
+    let c_len = u32::from_le_bytes(header[1..5].try_into().unwrap()) as usize;
+    let r_len = u32::from_le_bytes(header[5..9].try_into().unwrap()) as usize;
 
     if r_len > MAX_BLOCK_SIZE {
         return Err(CodecError::Corrupt(format!(
             "raw length {r_len} exceeds MAX_BLOCK_SIZE {MAX_BLOCK_SIZE}"
         )));
     }
-    if c_len > get_maximum_output_size(r_len) {
-        return Err(CodecError::Corrupt(format!(
-            "compressed length {c_len} implausible for raw length {r_len}"
-        )));
-    }
 
-    let mut compressed = vec![0u8; c_len];
-    r.read_exact(&mut compressed).map_err(|e| match e.kind() {
-        std::io::ErrorKind::UnexpectedEof => {
-            CodecError::Corrupt(format!("truncated body: expected {c_len} bytes"))
+    match codec {
+        Codec::Lz4 => {
+            if c_len > get_maximum_output_size(r_len) {
+                return Err(CodecError::Corrupt(format!(
+                    "compressed length {c_len} implausible for raw length {r_len}"
+                )));
+            }
+
+            let mut compressed = vec![0u8; c_len];
+            r.read_exact(&mut compressed).map_err(|e| match e.kind() {
+                std::io::ErrorKind::UnexpectedEof => {
+                    CodecError::Corrupt(format!("truncated body: expected {c_len} bytes"))
+                }
+                _ => CodecError::Io(e),
+            })?;
+
+            let raw = decompress(&compressed, r_len)
+                .map_err(|e| CodecError::Corrupt(format!("lz4 decompress failed: {e}")))?;
+
+            Ok(Some(raw))
         }
-        _ => CodecError::Io(e),
-    })?;
+        Codec::None => {
+            if r_len != c_len {
+                return Err(CodecError::Corrupt(format!(
+                    "raw length {r_len} not equals compressed length {c_len}"
+                )));
+            }
 
-    let raw = decompress(&compressed, r_len)
-        .map_err(|e| CodecError::Corrupt(format!("lz4 decompress failed: {e}")))?;
+            let mut raw = vec![0u8; c_len];
+            r.read_exact(&mut raw).map_err(|e| match e.kind() {
+                std::io::ErrorKind::UnexpectedEof => {
+                    CodecError::Corrupt(format!("truncated body: expected {c_len} bytes"))
+                }
+                _ => CodecError::Io(e),
+            })?;
 
-    Ok(Some(raw))
+            Ok(Some(raw))
+        }
+    }
 }
 
 #[cfg(test)]
