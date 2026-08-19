@@ -26,7 +26,7 @@ impl Table {
         assert!(!schema.is_empty(), "Schema must have at least one column");
         helpers::assert_unique_names(&schema);
 
-        if Path::is_dir(&dir) {
+        if dir.exists() {
             return Err(StorageError::AlreadyExists(dir));
         }
 
@@ -342,7 +342,7 @@ mod tests {
 
     fn created(schema: Vec<(String, DataType)>) -> (TempDir, PathBuf, Table) {
         let (root, dir) = table_dir();
-        let table = Table::create(dir.clone(), schema).unwrap();
+        let table = Table::create(dir.clone(), schema, Codec::Lz4).unwrap();
         (root, dir, table)
     }
 
@@ -364,7 +364,7 @@ mod tests {
     /// `Table` has no `Debug`, so `unwrap_err` is unavailable — same shape as
     /// `part_reader.rs::open_error`.
     fn create_error(dir: PathBuf, schema: Vec<(String, DataType)>) -> StorageError {
-        match Table::create(dir.clone(), schema) {
+        match Table::create(dir.clone(), schema, Codec::Lz4) {
             Ok(_) => panic!("expected creating {dir:?} to fail"),
             Err(e) => e,
         }
@@ -474,7 +474,7 @@ mod tests {
 
         assert_eq!(
             schema_text(&dir),
-            "version=1\ncolumn=id:Int64\ncolumn=name:String\ncolumn=score:Float64\n"
+            "version=1\ncodec=lz4\ncolumn=id:Int64\ncolumn=name:String\ncolumn=score:Float64\n"
         );
     }
 
@@ -490,7 +490,7 @@ mod tests {
         let root = TempDir::new().unwrap();
         let dir = root.path().join("nested/deeper/tbl");
 
-        let table = Table::create(dir.clone(), sample_schema()).unwrap();
+        let table = Table::create(dir.clone(), sample_schema(), Codec::Lz4).unwrap();
 
         assert!(dir.join("schema.txt").is_file());
         assert_eq!(table.schema(), sample_schema().as_slice());
@@ -508,7 +508,7 @@ mod tests {
         assert_eq!(table.schema(), schema.as_slice());
         assert_eq!(
             schema_text(&dir),
-            "version=1\ncolumn=zulu:Float64\ncolumn=alpha:String\ncolumn=mike:Int64\n"
+            "version=1\ncodec=lz4\ncolumn=zulu:Float64\ncolumn=alpha:String\ncolumn=mike:Int64\n"
         );
     }
 
@@ -552,7 +552,7 @@ mod tests {
     #[should_panic(expected = "Schema must have at least one column")]
     fn create_panics_on_an_empty_schema() {
         let (_root, dir) = table_dir();
-        let _ = Table::create(dir, vec![]);
+        let _ = Table::create(dir, vec![], Codec::Lz4);
     }
 
     #[test]
@@ -565,6 +565,7 @@ mod tests {
                 ("a".to_string(), DataType::Int64),
                 ("a".to_string(), DataType::Int64),
             ],
+            Codec::Lz4,
         );
     }
 
@@ -579,6 +580,7 @@ mod tests {
                 ("b".to_string(), DataType::Int64),
                 ("a".to_string(), DataType::Float64),
             ],
+            Codec::Lz4,
         );
     }
 
@@ -669,35 +671,38 @@ mod tests {
 
     #[test]
     fn open_rejects_a_column_line_without_the_prefix() {
-        let (_root, dir) = table_with_schema_text("version=1\nid:Int64\n");
+        let (_root, dir) = table_with_schema_text("version=1\ncodec=lz4\nid:Int64\n");
 
-        assert_eq!(open_err(dir), "corrupt: line 2: expected column=...");
+        assert_eq!(open_err(dir), "corrupt: line 3: expected column=...");
     }
 
     #[test]
     fn open_rejects_a_column_line_without_a_colon() {
-        let (_root, dir) = table_with_schema_text("version=1\ncolumn=id\n");
+        let (_root, dir) = table_with_schema_text("version=1\ncodec=lz4\ncolumn=id\n");
 
         assert_eq!(
             open_err(dir),
-            "corrupt: line 2: expected column=<name>:<type>"
+            "corrupt: line 3: expected column=<name>:<type>"
         );
     }
 
-    /// The reported line number is `i + 2` — the offending column is the second
-    /// one, so the message must say line 3, not line 2.
+    /// The reported line number is `i + 3` — `version=` and `codec=` occupy the
+    /// first two lines, and the offending column is the second one, so the
+    /// message must say line 4.
     #[test]
     fn open_reports_the_line_number_of_an_unknown_data_type() {
-        let (_root, dir) = table_with_schema_text("version=1\ncolumn=id:Int64\ncolumn=x:Int32\n");
+        let (_root, dir) =
+            table_with_schema_text("version=1\ncodec=lz4\ncolumn=id:Int64\ncolumn=x:Int32\n");
 
-        assert_eq!(open_err(dir), "corrupt: line 3: invalid data type 'Int32'");
+        assert_eq!(open_err(dir), "corrupt: line 4: invalid data type 'Int32'");
     }
 
     /// `parse_schema` quotes the name; `helpers::assert_unique_names`, which
     /// guards `create`, does not. Different layer, different message.
     #[test]
     fn open_rejects_duplicate_column_names() {
-        let (_root, dir) = table_with_schema_text("version=1\ncolumn=a:Int64\ncolumn=a:Float64\n");
+        let (_root, dir) =
+            table_with_schema_text("version=1\ncodec=lz4\ncolumn=a:Int64\ncolumn=a:Float64\n");
 
         assert_eq!(open_err(dir), "corrupt: duplicate column name 'a'");
     }
@@ -707,11 +712,71 @@ mod tests {
     /// behavior — the invariant lives on the write side only.
     #[test]
     fn open_accepts_a_header_only_schema() {
-        let (_root, dir) = table_with_schema_text("version=1\n");
+        let (_root, dir) = table_with_schema_text("version=1\ncodec=none\n");
 
         let table = Table::open(dir).unwrap();
 
         assert_eq!(table.schema(), &[]);
+    }
+
+    // ---- codec ---------------------------------------------------------
+
+    /// `schema.txt` is the only table-level record of the codec, so it has to
+    /// survive a create/open cycle — and it sits on line 2, ahead of the
+    /// columns, which is what shifts every column line number by one.
+    #[test]
+    fn create_records_the_codec_on_line_two_of_the_schema_file() {
+        for (codec, line) in [(Codec::None, "codec=none"), (Codec::Lz4, "codec=lz4")] {
+            let (_root, dir) = table_dir();
+            Table::create(dir.clone(), sample_schema(), codec).unwrap();
+
+            assert_eq!(schema_text(&dir).lines().nth(1), Some(line), "{codec:?}");
+            Table::open(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn open_rejects_a_schema_missing_the_codec_line() {
+        let (_root, dir) = table_with_schema_text("version=1\n");
+
+        assert_eq!(open_err(dir), "corrupt: missing codec line");
+    }
+
+    #[test]
+    fn open_rejects_a_codec_line_without_the_prefix() {
+        let (_root, dir) = table_with_schema_text("version=1\nlz4\ncolumn=id:Int64\n");
+
+        assert_eq!(open_err(dir), "corrupt: invalid codec line");
+    }
+
+    /// The codec name is parsed, not merely present — and the failure is
+    /// reported against line 2, where it lives.
+    #[test]
+    fn open_rejects_an_unknown_codec_name() {
+        let (_root, dir) = table_with_schema_text("version=1\ncodec=zstd\ncolumn=id:Int64\n");
+
+        assert_eq!(open_err(dir), "corrupt: line 2: invalid codec: zstd");
+    }
+
+    /// Every block carries its own codec byte, so data written under either
+    /// setting reads back identically — `PartReader` is never told which one to
+    /// expect.
+    #[test]
+    fn a_block_round_trips_under_either_codec() {
+        for codec in [Codec::None, Codec::Lz4] {
+            let (_root, dir) = table_dir();
+            let mut table = Table::create(dir, sample_schema(), codec).unwrap();
+
+            table
+                .insert(&[sample_block(&[1, 2, 3], &["a", "b", "c"], &[1.5, 2.5, 3.5])])
+                .unwrap();
+
+            let blocks = scan_all(&table, &["id", "name", "score"]).unwrap();
+            assert_eq!(blocks.len(), 1, "{codec:?}");
+            assert_eq!(i64s(&blocks[0], "id"), vec![1, 2, 3], "{codec:?}");
+            assert_eq!(strs(&blocks[0], "name"), vec!["a", "b", "c"], "{codec:?}");
+            assert_eq!(f64s(&blocks[0], "score"), vec![1.5, 2.5, 3.5], "{codec:?}");
+        }
     }
 
     #[test]

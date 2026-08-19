@@ -228,7 +228,7 @@ fn parse_schema(text: &str) -> Result<(Vec<(String, DataType)>, usize), StorageE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codec::write_block;
+    use crate::codec::{Codec, write_block};
     use crate::column_io::{write_f64_chunk, write_i64_chunk, write_str_chunk};
     use crate::part_writer::PartWriter;
     use crate::string_column::StringColumn;
@@ -299,7 +299,7 @@ mod tests {
     fn written_part(rows: usize) -> (TempDir, PathBuf) {
         let (root, dir) = part_dir();
 
-        let mut writer = PartWriter::new(dir.clone(), &sample_schema()).unwrap();
+        let mut writer = PartWriter::new(dir.clone(), &sample_schema(), Codec::Lz4).unwrap();
         if rows > 0 {
             writer.write_block(&sample_block(rows)).unwrap();
         }
@@ -810,7 +810,7 @@ mod tests {
     #[test]
     fn an_unfinished_part_is_not_found() {
         let (_root, dir) = part_dir();
-        let mut writer = PartWriter::new(dir.clone(), &sample_schema()).unwrap();
+        let mut writer = PartWriter::new(dir.clone(), &sample_schema(), Codec::Lz4).unwrap();
         writer.write_block(&sample_block(1)).unwrap();
 
         let e = open_error(&dir, &["id"]);
@@ -823,7 +823,7 @@ mod tests {
     #[test]
     fn a_staging_directory_is_not_a_readable_part() {
         let (_root, dir) = part_dir();
-        let writer = PartWriter::new(dir.clone(), &sample_schema()).unwrap();
+        let writer = PartWriter::new(dir.clone(), &sample_schema(), Codec::Lz4).unwrap();
         drop(writer);
 
         assert!(open_err(&staging_of(&dir), &["id"]).contains("schema.txt missing"));
@@ -909,7 +909,10 @@ mod tests {
     #[test]
     fn a_part_with_no_columns_cannot_be_projected() {
         let (_root, dir) = part_dir();
-        PartWriter::new(dir.clone(), &[]).unwrap().finish().unwrap();
+        PartWriter::new(dir.clone(), &[], Codec::Lz4)
+            .unwrap()
+            .finish()
+            .unwrap();
 
         assert!(open_err(&dir, &["id"]).contains("column 'id' not found"));
     }
@@ -920,7 +923,7 @@ mod tests {
     #[test]
     fn opens_a_column_with_an_empty_name() {
         let (_root, dir) = part_dir();
-        PartWriter::new(dir.clone(), &[col("", DataType::Int64)])
+        PartWriter::new(dir.clone(), &[col("", DataType::Int64)], Codec::Lz4)
             .unwrap()
             .finish()
             .unwrap();
@@ -1080,7 +1083,7 @@ mod tests {
     fn written_part_blocks(rows_per_block: &[usize]) -> (TempDir, PathBuf) {
         let (root, dir) = part_dir();
 
-        let mut writer = PartWriter::new(dir.clone(), &sample_schema()).unwrap();
+        let mut writer = PartWriter::new(dir.clone(), &sample_schema(), Codec::Lz4).unwrap();
         let mut start = 0i64;
         for &rows in rows_per_block {
             writer.write_block(&sample_block_at(start, rows)).unwrap();
@@ -1129,15 +1132,16 @@ mod tests {
     fn append_chunk(dir: &Path, name: &str, column: &Column) {
         match column {
             Column::Int64(v) => {
-                write_i64_chunk(&mut append(dir, &format!("{name}.bin")), v).unwrap()
+                write_i64_chunk(&mut append(dir, &format!("{name}.bin")), v, Codec::Lz4).unwrap()
             }
             Column::Float64(v) => {
-                write_f64_chunk(&mut append(dir, &format!("{name}.bin")), v).unwrap()
+                write_f64_chunk(&mut append(dir, &format!("{name}.bin")), v, Codec::Lz4).unwrap()
             }
             Column::String(sc) => write_str_chunk(
                 &mut append(dir, &format!("{name}.data.bin")),
                 &mut append(dir, &format!("{name}.offsets.bin")),
                 sc,
+                Codec::Lz4,
             )
             .unwrap(),
         }
@@ -1151,7 +1155,7 @@ mod tests {
     /// must be invalid in a way `write_*_chunk` would never emit.
     fn framed(raw: &[u8]) -> Vec<u8> {
         let mut buf = Vec::new();
-        write_block(&mut buf, raw).unwrap();
+        write_block(&mut buf, raw, Codec::Lz4).unwrap();
         buf
     }
 
@@ -1353,7 +1357,7 @@ mod tests {
     fn string_values_survive_the_round_trip() {
         let (_root, dir) = part_dir();
         let names = string_column(&["", "日本語", "a"]);
-        let mut writer = PartWriter::new(dir.clone(), &sample_schema()).unwrap();
+        let mut writer = PartWriter::new(dir.clone(), &sample_schema(), Codec::Lz4).unwrap();
         writer
             .write_block(&Block::new(
                 vec![
@@ -1378,7 +1382,7 @@ mod tests {
     fn extreme_numeric_values_survive_the_round_trip() {
         let (_root, dir) = part_dir();
         let scores = vec![f64::NAN, f64::INFINITY, f64::NEG_INFINITY];
-        let mut writer = PartWriter::new(dir.clone(), &sample_schema()).unwrap();
+        let mut writer = PartWriter::new(dir.clone(), &sample_schema(), Codec::Lz4).unwrap();
         writer
             .write_block(&Block::new(
                 vec![
@@ -1700,7 +1704,7 @@ mod tests {
         let e = next_error(&mut reader);
 
         assert!(matches!(e, StorageError::Codec(_)), "{e:?}");
-        assert!(e.to_string().contains("truncated header: got 5 of 8 bytes"));
+        assert!(e.to_string().contains("truncated header: got 5 of 9 bytes"));
     }
 
     /// A torn tail is a *codec* truncation, not the `part truncated` row-count
@@ -1869,7 +1873,8 @@ mod tests {
     #[test]
     fn a_column_with_an_empty_name_can_be_read() {
         let (_root, dir) = part_dir();
-        let mut writer = PartWriter::new(dir.clone(), &[col("", DataType::Int64)]).unwrap();
+        let mut writer =
+            PartWriter::new(dir.clone(), &[col("", DataType::Int64)], Codec::Lz4).unwrap();
         writer
             .write_block(&Block::new(
                 vec![("".to_string(), Column::Int64(vec![7]))],

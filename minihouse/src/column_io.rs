@@ -142,14 +142,14 @@ mod tests {
 
     fn round_trip_i64(values: &[i64]) -> Option<Vec<i64>> {
         let mut buf = Cursor::new(Vec::new());
-        write_i64_chunk(&mut buf, values).unwrap();
+        write_i64_chunk(&mut buf, values, Codec::Lz4).unwrap();
         buf.set_position(0);
         read_i64_chunk(&mut buf).unwrap()
     }
 
     fn round_trip_f64(values: &[f64]) -> Option<Vec<f64>> {
         let mut buf = Cursor::new(Vec::new());
-        write_f64_chunk(&mut buf, values).unwrap();
+        write_f64_chunk(&mut buf, values, Codec::Lz4).unwrap();
         buf.set_position(0);
         read_f64_chunk(&mut buf).unwrap()
     }
@@ -157,7 +157,7 @@ mod tests {
     fn round_trip_str(chunk: &StringColumn) -> Option<StringColumn> {
         let mut data = Cursor::new(Vec::new());
         let mut offsets = Cursor::new(Vec::new());
-        write_str_chunk(&mut data, &mut offsets, chunk).unwrap();
+        write_str_chunk(&mut data, &mut offsets, chunk, Codec::Lz4).unwrap();
         data.set_position(0);
         offsets.set_position(0);
         read_str_chunk(&mut data, &mut offsets).unwrap()
@@ -174,7 +174,7 @@ mod tests {
     /// One well-framed block carrying `raw`, rewound and ready to read.
     fn block(raw: &[u8]) -> Cursor<Vec<u8>> {
         let mut buf = Cursor::new(Vec::new());
-        write_block(&mut buf, raw).unwrap();
+        write_block(&mut buf, raw, Codec::Lz4).unwrap();
         buf.set_position(0);
         buf
     }
@@ -212,9 +212,9 @@ mod tests {
     #[test]
     fn i64_chunk_reads_sequential_chunks_in_order() {
         let mut buf = Cursor::new(Vec::new());
-        write_i64_chunk(&mut buf, &[1, 2]).unwrap();
-        write_i64_chunk(&mut buf, &[]).unwrap();
-        write_i64_chunk(&mut buf, &[3]).unwrap();
+        write_i64_chunk(&mut buf, &[1, 2], Codec::Lz4).unwrap();
+        write_i64_chunk(&mut buf, &[], Codec::Lz4).unwrap();
+        write_i64_chunk(&mut buf, &[3], Codec::Lz4).unwrap();
         buf.set_position(0);
 
         assert_eq!(read_i64_chunk(&mut buf).unwrap(), Some(vec![1, 2]));
@@ -282,9 +282,9 @@ mod tests {
     #[test]
     fn f64_chunk_reads_sequential_chunks_in_order() {
         let mut buf = Cursor::new(Vec::new());
-        write_f64_chunk(&mut buf, &[1.5, 2.5]).unwrap();
-        write_f64_chunk(&mut buf, &[]).unwrap();
-        write_f64_chunk(&mut buf, &[3.5]).unwrap();
+        write_f64_chunk(&mut buf, &[1.5, 2.5], Codec::Lz4).unwrap();
+        write_f64_chunk(&mut buf, &[], Codec::Lz4).unwrap();
+        write_f64_chunk(&mut buf, &[3.5], Codec::Lz4).unwrap();
         buf.set_position(0);
 
         assert_eq!(read_f64_chunk(&mut buf).unwrap(), Some(vec![1.5, 2.5]));
@@ -361,9 +361,9 @@ mod tests {
 
         let mut data = Cursor::new(Vec::new());
         let mut offsets = Cursor::new(Vec::new());
-        write_str_chunk(&mut data, &mut offsets, &first).unwrap();
-        write_str_chunk(&mut data, &mut offsets, &second).unwrap();
-        write_str_chunk(&mut data, &mut offsets, &third).unwrap();
+        write_str_chunk(&mut data, &mut offsets, &first, Codec::Lz4).unwrap();
+        write_str_chunk(&mut data, &mut offsets, &second, Codec::Lz4).unwrap();
+        write_str_chunk(&mut data, &mut offsets, &third, Codec::Lz4).unwrap();
         data.set_position(0);
         offsets.set_position(0);
 
@@ -421,8 +421,8 @@ mod tests {
 
         let mut data = Cursor::new(Vec::new());
         let mut offsets = Cursor::new(Vec::new());
-        write_str_chunk(&mut data, &mut offsets, &first).unwrap();
-        write_block(&mut data, b"orphan").unwrap();
+        write_str_chunk(&mut data, &mut offsets, &first, Codec::Lz4).unwrap();
+        write_block(&mut data, b"orphan", Codec::Lz4).unwrap();
         data.set_position(0);
         offsets.set_position(0);
 
@@ -513,7 +513,7 @@ mod tests {
 
         let mut data = Cursor::new(Vec::new());
         let mut offsets = Cursor::new(Vec::new());
-        let _ = write_str_chunk(&mut data, &mut offsets, &col);
+        let _ = write_str_chunk(&mut data, &mut offsets, &col, Codec::Lz4);
     }
 
     #[test]
@@ -526,6 +526,6 @@ mod tests {
 
         let mut data = Cursor::new(Vec::new());
         let mut offsets = Cursor::new(Vec::new());
-        let _ = write_str_chunk(&mut data, &mut offsets, &col);
+        let _ = write_str_chunk(&mut data, &mut offsets, &col, Codec::Lz4);
     }
 }

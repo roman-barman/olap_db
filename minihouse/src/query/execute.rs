@@ -102,6 +102,7 @@ mod tests {
     use super::*;
     use crate::aggregate::AggKind;
     use crate::block::Block;
+    use crate::codec::Codec;
     use crate::string_column::StringColumn;
     use std::fs;
     use std::path::PathBuf;
@@ -143,7 +144,8 @@ mod tests {
     /// discard it.
     fn table_of_parts(blocks: Vec<Block>) -> (TempDir, Table) {
         let root = TempDir::new().unwrap();
-        let mut table = Table::create(root.path().join("tbl"), sample_schema()).unwrap();
+        let mut table =
+            Table::create(root.path().join("tbl"), sample_schema(), Codec::Lz4).unwrap();
         for block in blocks {
             table.insert(&[block]).unwrap();
         }
@@ -154,7 +156,8 @@ mod tests {
     /// part — the other half of the scan: many blocks, one `PartReader`.
     fn table_of_one_part(blocks: Vec<Block>) -> (TempDir, Table) {
         let root = TempDir::new().unwrap();
-        let mut table = Table::create(root.path().join("tbl"), sample_schema()).unwrap();
+        let mut table =
+            Table::create(root.path().join("tbl"), sample_schema(), Codec::Lz4).unwrap();
         table.insert(&blocks).unwrap();
         (root, table)
     }
