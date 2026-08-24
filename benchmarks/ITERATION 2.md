@@ -75,3 +75,51 @@ identical file sizes make per-block fallback the only plausible story.)
 4. **Block-local dictionaries cap string compression** (2.7× vs naive 5–10×
    expectation): compression ratio depends on block size — a tunable to
    revisit.
+
+# Benchmark: Iteration 2, subtask 2.6 — full-scan read speed
+
+> Read-side, part 1: full table scan (all four columns) over both on-disk
+> tables, cold and warm. Companion to the write-side report.
+> The projected-query matrix via `execute` follows separately.
+
+## Environment
+
+| Parameter | Value |
+|---|---|
+| Date | 2026-08-21 |
+| CPU / RAM | Intel Core i7-1255U (2P+8E, 12 threads) / 16 GB |
+
+Method: scan of all columns (`id, ts, url, dur`) through `Table::scan`,
+accumulating `num_rows` under `black_box`; `Table::open` outside the timed
+region. Cold = first run after process start; warm = subsequent run
+(page cache hot). Tables: one part each, 10M rows (see write-side report).
+
+## Results
+
+| Run | None (369 MB) | LZ4 (199 MB) | Faster |
+|---|---|---|---|
+| Cold | 449.0 ms | 279.8 ms | **LZ4, 1.6×** |
+| Warm | 149.0 ms | 201.1 ms | **None, 1.35×** |
+
+## Interpretation
+
+1. **Cold: compression pays exactly where write-time hid it.** Reading from
+   disk, None hauls 369 MB, LZ4 hauls 199 MB; the byte savings outweigh
+   decompression cost. The write-side lesson inverts on the read side:
+   CPU-for-bytes is a losing trade into the page cache and a winning one
+   out of the disk.
+
+2. **Warm: roles flip.** With all bytes in RAM, None is pure block assembly
+   (149 ms); LZ4 adds ~52 ms of decompression over ~200 MB compressed —
+   ~4 GB/s, LZ4's nameplate decompression speed observed live.
+
+3. **Codec choice is a bet on the cache profile of the workload**: hot
+   working sets favor None, cold scans favor LZ4. (Production systems
+   default to LZ4 because working sets rarely fit in RAM at scale — and
+   storage bytes cost money regardless.)
+
+4. **Warm-None throughput ≈ 2.5 GB/s end-to-end** (369 MB / 149 ms) — well
+   below memory bandwidth (~11.7 GB/s reference). Block assembly (column
+   allocation, StringColumn reconstruction from chunks, per-block reader
+   plumbing) is now a visible cost center, not just memcpy. Profiling
+   candidate — backlog, not now.
