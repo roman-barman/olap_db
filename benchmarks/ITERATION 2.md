@@ -123,3 +123,104 @@ region. Cold = first run after process start; warm = subsequent run
    allocation, StringColumn reconstruction from chunks, per-block reader
    plumbing) is now a visible cost center, not just memcpy. Profiling
    candidate — backlog, not now.
+
+# Iteration 2 — Final Report: On-Disk Storage
+
+> Closing report. The engine went from in-memory columns to a persistent
+> columnar store: string columns as `data + offsets`, an LZ4/None block
+> codec with per-block self-description and fallback, immutable parts
+> written atomically (tmp + rename), projected reads, and a Table that
+> survives process restarts. All correctness gates (cross-checks against
+> the independent row engine) passed on every measurement below.
+
+## Environment
+
+| Parameter | Value |
+|---|---|
+| Date | 2026-08-25 |
+| CPU / RAM | Intel Core i7-1255U (2P+8E, 12 threads) / 16 GB |
+| Dataset | 10M rows, seed 42, blocks of 8,192; one part per table |
+
+## Storage sizes
+
+| Format | Size | vs None |
+|---|---|---|
+| CSV (naive text) | 295.6 MB | 0.80× |
+| Binary, Codec::None | 369.0 MB | 1.00× |
+| Binary, Codec::Lz4 | 199.1 MB | **0.54×** |
+
+Notable: naive text is *smaller* than uncompressed binary — i64 padding
+(5–6 zero bytes per value at these ranges) costs more than ASCII digits
+with commas. Only LZ4 beats both. Per-file: url.data 2.7×, id/dur 2.0×,
+ts 1.7×, **url.offsets 1.0× — fallback fired, stored as None** (verified
+by codec byte on disk: `00`). Details: write-side report.
+
+## Write
+
+| Codec | Insert 10M rows | Note |
+|---|---|---|
+| None | 266 ms (~830 MB/s) | page cache absorbs I/O |
+| Lz4 | 704 ms | +438 ms = pure compress() at ~0.5 GB/s |
+
+Compression shows zero benefit at write time (bytes saved are invisible
+behind the page cache); the entire cost is CPU.
+
+## Read: full scan, all columns
+
+| Run | None | LZ4 | Winner |
+|---|---|---|---|
+| Cold | 449 ms | 280 ms | **LZ4 1.6×** |
+| Warm | 149 ms | 201 ms | **None 1.35×** |
+
+The iteration's headline: **codec choice is a bet on cache profile** —
+LZ4 wins cold (fewer disk bytes), None wins warm (no decompression).
+
+## Read: query matrix (warm; cold characterized by full scan above)
+
+`execute` with projection, medians of 6 runs after warm-up:
+
+| Query | Memory (iter-1) | Disk None | Disk LZ4 | Row engine |
+|---|---|---|---|---|
+| sum, no filter | 7.0 | 11.5 | 30.2 | ~20 |
+| sum, ~1% | 18.6 | 28.8 | 65.6 | 22.4 |
+| sum, ~50% | 45.6 | 58.2 | 96.7 | 46.2 |
+| sum, ~99% | 20.4 | 35.0 | 75.5 | 22.6 |
+| count, ~1/50/99% | 18–44 | 38–61 | 91–122 | ~21 |
+| count url == const | 48.4 | 47.2 | 106.6 | 32.6 |
+
+Readings:
+
+1. **Persistence tax at warm None: ~1.5×** over iteration-1 memory
+   (block assembly through the PartReader pipeline; warm-None end-to-end
+   assembly ≈ 2.5 GB/s vs 11.7 GB/s raw memory).
+2. **LZ4 warm pays full decompression per query** — deltas over None
+   match LZ4's ~4 GB/s nameplate on the columns read (e.g. no-filter:
+   +18.7 ms ≈ 77 MB / 4 GB/s). Decompressed data is cached nowhere;
+   an uncompressed-block cache is the standard cure (backlog).
+3. **The row engine now leads all filtered warm queries** — its data
+   sits in RAM for free. This is the honest price of persistence, and
+   the cures are measured, not hypothetical: read less (sparse index,
+   iteration 4), assemble cheaper (buffer reuse, backlog), skip columns
+   entirely (count via mask — its disk multiplier is now visible: count
+   drags the id column it never looks at).
+
+## Backlog (accumulated, with measured motivation)
+
+- **Sparse index (iteration 4)**: the only cure for reading fewer bytes.
+- **Uncompressed-block cache**: removes per-query decompression at warm LZ4.
+- **Aggregate pushdown (count via mask)**: −1 column of disk reads.
+- **Delta/narrow types**: ts/dur/id compress 1.7–2× via zero-padding only;
+  url.offsets (1.0×) is the ideal Delta client.
+- **Block assembly cost** (2.5 GB/s ceiling): buffer reuse, profiling.
+- Long strings (chunk-to-block mapping via marks), QueryError split,
+  parser core dedup, cap threading — from earlier reviews.
+
+## Iteration verdict
+
+The engine is now a real, restart-surviving columnar store with an honest
+measured profile: 1.85× storage compression, sub-second writes, cold reads
+where compression pays and warm reads where its cost is exposed. Every
+architectural IOU (index, merges, caches) now has a price tag attached.
+Next: **iteration 3 — parts and merges**, whose entry condition this
+iteration deliberately created: many small immutable parts and a table
+that only ever grows by adding them.
