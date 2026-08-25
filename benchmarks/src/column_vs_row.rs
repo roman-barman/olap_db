@@ -1,17 +1,60 @@
 use crate::bench;
-use crate::column_vs_row::generator::generate;
+use crate::column_vs_row::generator::{generate, schema};
 use crate::column_vs_row::row_table::{
     RowTable, count_where_ts_gt, count_where_url_eq, sum_dur, sum_dur_where_ts_gt,
 };
 use minihouse::aggregate::AggKind;
 use minihouse::query::{CmpOp, SimpleQuery};
-use minihouse::{Table, Value};
+use minihouse::{Codec, DataType, Table, Value};
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::path::PathBuf;
+use std::time::Instant;
 
 mod generator;
 mod row_table;
 
+pub(super) fn prepare() {
+    let (blocks, row_table) = generate(10_000_000, 8192);
+
+    let mut w =
+        BufWriter::new(File::create("benchmarks/data/dump.csv").expect("can not create csv file"));
+    for r in &row_table.rows {
+        writeln!(w, "{},{},{},{}", r.id, r.ts, r.url, r.dur).expect("can not write to csv file");
+    }
+    w.flush().expect("can not flush csv file");
+
+    for (dir, codec) in [
+        (
+            PathBuf::from("benchmarks/data/column_vs_row/none"),
+            Codec::None,
+        ),
+        (
+            PathBuf::from("benchmarks/data/column_vs_row/lz4"),
+            Codec::Lz4,
+        ),
+    ] {
+        let time = Instant::now();
+
+        let mut t = Table::create(dir, schema(), codec).expect("can not create table");
+        t.insert(&blocks).expect("can not insert blocks to table");
+
+        let duration = time.elapsed();
+        println!("{}: {:?}", codec.as_str(), duration);
+    }
+}
+
 pub(super) fn execute() {
-    let (col_table, row_table) = generate(10_000_000, 8192);
+    let schema = schema();
+    let columns = schema
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect::<Vec<_>>();
+    let (_, row_table) = generate(10_000_000, 8192);
+    //let col_table = Table::open(PathBuf::from("benchmarks/data/column_vs_row/none")).expect("can not open table");
+    let col_table = Table::open(PathBuf::from("benchmarks/data/column_vs_row/lz4"))
+        .expect("can not open table");
+
     sum_bench(&col_table, &row_table);
     without_filter_bench(&col_table, &row_table);
     count_bench(&col_table, &row_table);
@@ -186,7 +229,8 @@ fn crosscheck<F>(col_table: &Table, row_table: &RowTable, col_query: &SimpleQuer
 where
     F: Fn(&RowTable) -> i64,
 {
-    let col_result = minihouse::query::execute(col_table, col_query);
+    let col_result =
+        minihouse::query::execute(col_table, col_query).expect("columnar engine failed");
     let row_value = row_query(row_table);
     assert_eq!(
         col_result,

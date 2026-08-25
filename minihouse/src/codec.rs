@@ -3,13 +3,13 @@ use std::io::{Read, Write};
 use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Codec {
+pub enum Codec {
     None = 0,
     Lz4 = 1,
 }
 
 impl Codec {
-    pub(crate) fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             Codec::None => "none",
             Codec::Lz4 => "lz4",
@@ -47,7 +47,7 @@ impl TryFrom<u8> for Codec {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum CodecError {
+pub enum CodecError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("corrupt block: {0}")]

@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 mod column_vs_row;
 
 fn main() {
+    column_vs_row::prepare();
     column_vs_row::execute();
 }
 

@@ -1,28 +1,22 @@
 use crate::column_vs_row::row_table::{Row, RowTable};
-use minihouse::Block;
 use minihouse::Column;
 use minihouse::DataType;
-use minihouse::Table;
+use minihouse::{Block, Codec};
 use rand::prelude::StdRng;
 use rand::{RngExt, SeedableRng};
 
-pub(super) fn generate(n: usize, block_size: usize) -> (Table, RowTable) {
+pub(super) fn generate(n: usize, block_size: usize) -> (Vec<Block>, RowTable) {
     let mut rng = StdRng::seed_from_u64(42);
 
     let mut row_table = RowTable {
         rows: Vec::with_capacity(n),
     };
-    let mut col_table = Table::new(vec![
-        ("id".into(), DataType::Int64),
-        ("ts".into(), DataType::Int64),
-        ("url".into(), DataType::String),
-        ("dur".into(), DataType::Int64),
-    ]);
 
     let mut id_column = Column::with_capacity(DataType::Int64, block_size);
     let mut ts_column = Column::with_capacity(DataType::Int64, block_size);
     let mut url_column = Column::with_capacity(DataType::String, block_size);
     let mut dur_column = Column::with_capacity(DataType::Int64, block_size);
+    let mut blocks = Vec::with_capacity(n / block_size + 1);
 
     for i in 0..n {
         let id = i as i64;
@@ -43,7 +37,7 @@ pub(super) fn generate(n: usize, block_size: usize) -> (Table, RowTable) {
         dur_column.push_i64(dur);
 
         if id_column.len() == block_size {
-            col_table.insert(make_block(id_column, ts_column, url_column, dur_column));
+            blocks.push(make_block(id_column, ts_column, url_column, dur_column));
 
             id_column = Column::with_capacity(DataType::Int64, block_size);
             ts_column = Column::with_capacity(DataType::Int64, block_size);
@@ -52,9 +46,9 @@ pub(super) fn generate(n: usize, block_size: usize) -> (Table, RowTable) {
         }
     }
 
-    col_table.insert(make_block(id_column, ts_column, url_column, dur_column));
+    blocks.push(make_block(id_column, ts_column, url_column, dur_column));
 
-    (col_table, row_table)
+    (blocks, row_table)
 }
 
 fn make_block(id: Column, ts: Column, url: Column, dur: Column) -> Block {
@@ -68,4 +62,13 @@ fn make_block(id: Column, ts: Column, url: Column, dur: Column) -> Block {
         ],
         n,
     )
+}
+
+pub(super) fn schema() -> Vec<(String, DataType)> {
+    vec![
+        ("id".into(), DataType::Int64),
+        ("ts".into(), DataType::Int64),
+        ("url".into(), DataType::String),
+        ("dur".into(), DataType::Int64),
+    ]
 }

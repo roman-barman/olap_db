@@ -15,6 +15,7 @@ mod table;
 mod value;
 
 pub use block::Block;
+pub use codec::Codec;
 pub use column::Column;
 use std::str::FromStr;
 pub use table::Table;
