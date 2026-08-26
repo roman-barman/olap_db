@@ -152,7 +152,7 @@ impl<'a> Iterator for BlockIter<'a> {
                 Some(reader) => reader,
                 None => {
                     let (_, path) = &self.parts[self.pos];
-                    let reader = PartReader::open(&path, self.columns);
+                    let reader = PartReader::open(path, self.columns);
 
                     let reader = match reader {
                         Ok(reader) => reader,

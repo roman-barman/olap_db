@@ -17,10 +17,10 @@ pub fn execute(table: &Table, q: &SimpleQuery) -> Result<Option<Value>, StorageE
     let agg_col = q.aggregate.0;
 
     let mut columns: Vec<&str> = vec![agg_col];
-    if let Some((filter_col, _, _)) = &q.filter {
-        if *filter_col != agg_col {
-            columns.push(filter_col);
-        }
+    if let Some((filter_col, _, _)) = &q.filter
+        && *filter_col != agg_col
+    {
+        columns.push(filter_col);
     }
 
     for block_result in table.scan(&columns)? {

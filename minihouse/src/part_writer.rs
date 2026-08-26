@@ -104,9 +104,9 @@ impl PartWriter {
     pub(crate) fn finish(mut self) -> std::io::Result<()> {
         let mut schema_writer = BufWriter::new(File::create(self.tmp_dir.join("schema.txt"))?);
         schema_writer.write_all(b"version=1\n")?;
-        write!(schema_writer, "num_rows={}\n", self.num_rows)?;
+        writeln!(schema_writer, "num_rows={}", self.num_rows)?;
         for (name, data_type) in self.schema.iter() {
-            write!(schema_writer, "column={}:{}\n", name, data_type.as_str())?;
+            writeln!(schema_writer, "column={}:{}", name, data_type.as_str())?;
         }
         schema_writer.flush()?;
 

@@ -31,6 +31,7 @@ impl Block {
         self.columns.iter().find(|(n, _)| n == name).map(|(_, c)| c)
     }
 
+    #[cfg(test)]
     pub(crate) fn filter(&self, mask: &[bool]) -> Block {
         assert_eq!(
             mask.len(),

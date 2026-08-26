@@ -4,7 +4,7 @@ use crate::{Block, Column, DataType};
 use std::fs;
 use std::fs::File;
 use std::io::{BufReader, ErrorKind};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub(crate) struct PartReader {
     schema: Vec<(String, DataType)>,
@@ -235,6 +235,7 @@ mod tests {
     use crate::{Block, Column};
     use std::fs::OpenOptions;
     use std::io::Write;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
     /// Every failure path returns `StorageError`; tests assert on the rendered message.

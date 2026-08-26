@@ -98,7 +98,8 @@ fn filter_slice<T: Clone>(v: &[T], mask: &[bool], cap: usize) -> Vec<T> {
     out.extend(
         v.iter()
             .zip(mask)
-            .filter_map(|(x, &m)| m.then(|| x.clone())),
+            .filter(|&(_, &m)| m)
+            .map(|(x, _)| x.clone()),
     );
     out
 }

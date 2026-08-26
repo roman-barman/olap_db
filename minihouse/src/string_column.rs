@@ -1,5 +1,5 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct StringColumn {
+pub struct StringColumn {
     data: Vec<u8>,
     offsets: Vec<u32>,
 }
@@ -45,6 +45,7 @@ impl StringColumn {
         self.offsets.len() - 1
     }
 
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -56,6 +57,7 @@ impl StringColumn {
         self.offsets.push(end);
     }
 
+    #[cfg(test)]
     pub(crate) fn get(&self, i: usize) -> &str {
         let start = self.offsets[i] as usize;
         let end = self.offsets[i + 1] as usize;

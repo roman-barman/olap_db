@@ -81,7 +81,7 @@ pub(crate) fn write_block(w: &mut impl Write, raw: &[u8], codec: Codec) -> Resul
     w.write_all(&[codec as u8])?;
     w.write_all(&c_len.to_le_bytes())?;
     w.write_all(&r_len.to_le_bytes())?;
-    w.write_all(&compressed)?;
+    w.write_all(compressed)?;
 
     Ok(())
 }

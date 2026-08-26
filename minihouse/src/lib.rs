@@ -1,4 +1,5 @@
 #![warn(clippy::all)]
+#![allow(clippy::manual_slice_size_calculation)]
 
 pub mod aggregate;
 mod block;
