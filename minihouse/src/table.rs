@@ -1,9 +1,9 @@
 use crate::DataType;
 use crate::block::Block;
 use crate::codec::Codec;
-use crate::helpers;
 use crate::part_reader::PartReader;
 use crate::part_writer::PartWriter;
+use crate::schema::Schema;
 use crate::storage_error::StorageError;
 use std::fs;
 use std::fs::File;
@@ -11,21 +11,14 @@ use std::io::{BufWriter, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
 pub struct Table {
-    schema: Vec<(String, DataType)>,
+    schema: Schema,
     dir: PathBuf,
     next_part_id: usize,
     codec: Codec,
 }
 
 impl Table {
-    pub fn create(
-        dir: PathBuf,
-        schema: Vec<(String, DataType)>,
-        codec: Codec,
-    ) -> Result<Self, StorageError> {
-        assert!(!schema.is_empty(), "Schema must have at least one column");
-        helpers::assert_unique_names(&schema);
-
+    pub fn create(dir: PathBuf, schema: Schema, codec: Codec) -> Result<Self, StorageError> {
         if dir.exists() {
             return Err(StorageError::AlreadyExists(dir));
         }
@@ -106,7 +99,7 @@ impl Table {
 
         let mut writer = PartWriter::new(
             self.dir.join(part_dir_name(self.next_part_id)),
-            &self.schema,
+            self.schema.clone(),
             self.codec,
         )?;
 
@@ -132,7 +125,7 @@ impl Table {
         })
     }
 
-    pub(crate) fn schema(&self) -> &[(String, DataType)] {
+    pub(crate) fn schema(&self) -> &Schema {
         &self.schema
     }
 }
@@ -189,7 +182,7 @@ fn part_dir_name(id: usize) -> String {
     format!("part_{id:04}")
 }
 
-fn parse_schema(text: &str) -> Result<(Vec<(String, DataType)>, Codec), StorageError> {
+fn parse_schema(text: &str) -> Result<(Schema, Codec), StorageError> {
     if text.is_empty() {
         return Err(StorageError::Corrupt("empty schema".into()));
     }
@@ -244,14 +237,7 @@ fn parse_schema(text: &str) -> Result<(Vec<(String, DataType)>, Codec), StorageE
         })
         .collect::<Result<Vec<(String, DataType)>, StorageError>>()?;
 
-    for i in 1..schema.len() {
-        if schema[..i].iter().any(|(n, _)| n == &schema[i].0) {
-            return Err(StorageError::Corrupt(format!(
-                "duplicate column name '{}'",
-                schema[i].0
-            )));
-        }
-    }
+    let schema = Schema::new(schema).map_err(|e| StorageError::Corrupt(e.to_string()))?;
 
     Ok((schema, codec))
 }
@@ -315,12 +301,13 @@ mod tests {
 
     /// One column per `DataType`, so every fixture exercises both the
     /// single-file and the paired-file branch of the part format.
-    fn sample_schema() -> Vec<(String, DataType)> {
-        vec![
+    fn sample_schema() -> Schema {
+        Schema::new(vec![
             ("id".to_string(), DataType::Int64),
             ("name".to_string(), DataType::String),
             ("score".to_string(), DataType::Float64),
-        ]
+        ])
+        .unwrap()
     }
 
     fn sample_block(ids: &[i64], names: &[&str], scores: &[f64]) -> Block {
@@ -340,7 +327,7 @@ mod tests {
         sample_block(&[], &[], &[])
     }
 
-    fn created(schema: Vec<(String, DataType)>) -> (TempDir, PathBuf, Table) {
+    fn created(schema: Schema) -> (TempDir, PathBuf, Table) {
         let (root, dir) = table_dir();
         let table = Table::create(dir.clone(), schema, Codec::Lz4).unwrap();
         (root, dir, table)
@@ -363,7 +350,7 @@ mod tests {
 
     /// `Table` has no `Debug`, so `unwrap_err` is unavailable — same shape as
     /// `part_reader.rs::open_error`.
-    fn create_error(dir: PathBuf, schema: Vec<(String, DataType)>) -> StorageError {
+    fn create_error(dir: PathBuf, schema: Schema) -> StorageError {
         match Table::create(dir.clone(), schema, Codec::Lz4) {
             Ok(_) => panic!("expected creating {dir:?} to fail"),
             Err(e) => e,
@@ -493,19 +480,20 @@ mod tests {
         let table = Table::create(dir.clone(), sample_schema(), Codec::Lz4).unwrap();
 
         assert!(dir.join("schema.txt").is_file());
-        assert_eq!(table.schema(), sample_schema().as_slice());
+        assert_eq!(*table.schema(), sample_schema());
     }
 
     #[test]
     fn create_returns_the_declared_schema_in_declaration_order() {
-        let schema = vec![
+        let schema = Schema::new(vec![
             ("zulu".to_string(), DataType::Float64),
             ("alpha".to_string(), DataType::String),
             ("mike".to_string(), DataType::Int64),
-        ];
+        ])
+        .unwrap();
         let (_root, dir, table) = created(schema.clone());
 
-        assert_eq!(table.schema(), schema.as_slice());
+        assert_eq!(*table.schema(), schema);
         assert_eq!(
             schema_text(&dir),
             "version=1\ncodec=lz4\ncolumn=zulu:Float64\ncolumn=alpha:String\ncolumn=mike:Int64\n"
@@ -514,10 +502,10 @@ mod tests {
 
     #[test]
     fn create_with_a_single_column_schema_succeeds() {
-        let schema = vec![("id".to_string(), DataType::Int64)];
+        let schema = Schema::new(vec![("id".to_string(), DataType::Int64)]).unwrap();
         let (_root, _dir, table) = created(schema.clone());
 
-        assert_eq!(table.schema(), schema.as_slice());
+        assert_eq!(*table.schema(), schema);
     }
 
     #[test]
@@ -548,42 +536,6 @@ mod tests {
         assert_eq!(fs::read(&dir).unwrap(), b"not a table");
     }
 
-    #[test]
-    #[should_panic(expected = "Schema must have at least one column")]
-    fn create_panics_on_an_empty_schema() {
-        let (_root, dir) = table_dir();
-        let _ = Table::create(dir, vec![], Codec::Lz4);
-    }
-
-    #[test]
-    #[should_panic(expected = "duplicate column name: a")]
-    fn create_panics_on_adjacent_duplicate_column_names() {
-        let (_root, dir) = table_dir();
-        let _ = Table::create(
-            dir,
-            vec![
-                ("a".to_string(), DataType::Int64),
-                ("a".to_string(), DataType::Int64),
-            ],
-            Codec::Lz4,
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "duplicate column name: a")]
-    fn create_panics_on_non_adjacent_duplicate_column_names() {
-        let (_root, dir) = table_dir();
-        let _ = Table::create(
-            dir,
-            vec![
-                ("a".to_string(), DataType::Int64),
-                ("b".to_string(), DataType::Int64),
-                ("a".to_string(), DataType::Float64),
-            ],
-            Codec::Lz4,
-        );
-    }
-
     /// Pins `next_part_id == 0` on a freshly created table.
     #[test]
     fn the_first_insert_into_a_fresh_table_is_part_0000() {
@@ -610,7 +562,7 @@ mod tests {
 
         let reopened = Table::open(dir).unwrap();
 
-        assert_eq!(reopened.schema(), sample_schema().as_slice());
+        assert_eq!(*reopened.schema(), sample_schema());
         let blocks = scan_all(&reopened, &["id", "name", "score"]).unwrap();
         assert_eq!(blocks.len(), 1);
         assert_eq!(i64s(&blocks[0], "id"), vec![1, -2, i64::MAX]);
@@ -705,18 +657,6 @@ mod tests {
             table_with_schema_text("version=1\ncodec=lz4\ncolumn=a:Int64\ncolumn=a:Float64\n");
 
         assert_eq!(open_err(dir), "corrupt: duplicate column name 'a'");
-    }
-
-    /// `create` asserts the schema is non-empty, but `open` does not re-check
-    /// it: a header-only file loads as a zero-column table. Documents current
-    /// behavior — the invariant lives on the write side only.
-    #[test]
-    fn open_accepts_a_header_only_schema() {
-        let (_root, dir) = table_with_schema_text("version=1\ncodec=none\n");
-
-        let table = Table::open(dir).unwrap();
-
-        assert_eq!(table.schema(), &[]);
     }
 
     // ---- codec ---------------------------------------------------------
@@ -973,10 +913,13 @@ mod tests {
     #[test]
     #[should_panic(expected = "block has different number of columns than table")]
     fn insert_panics_on_too_many_columns() {
-        let (_root, _dir, mut table) = created(vec![
-            ("id".to_string(), DataType::Int64),
-            ("name".to_string(), DataType::String),
-        ]);
+        let (_root, _dir, mut table) = created(
+            Schema::new(vec![
+                ("id".to_string(), DataType::Int64),
+                ("name".to_string(), DataType::String),
+            ])
+            .unwrap(),
+        );
         let block = Block::new(
             vec![
                 ("id".to_string(), Column::Int64(vec![1])),
@@ -1083,7 +1026,8 @@ mod tests {
 
     #[test]
     fn a_large_block_round_trips() {
-        let (_root, _dir, mut table) = created(vec![("id".to_string(), DataType::Int64)]);
+        let (_root, _dir, mut table) =
+            created(Schema::new(vec![("id".to_string(), DataType::Int64)]).unwrap());
         let ids: Vec<i64> = (0..1000).collect();
 
         table
@@ -1284,6 +1228,6 @@ mod tests {
             .unwrap();
         table.insert(&[sample_block(&[3], &["c"], &[3.0])]).unwrap();
 
-        assert_eq!(table.schema(), schema.as_slice());
+        assert_eq!(*table.schema(), schema);
     }
 }

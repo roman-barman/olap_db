@@ -1,4 +1,5 @@
 use crate::column_io::{read_f64_chunk, read_i64_chunk, read_str_chunk};
+use crate::schema::Schema;
 use crate::storage_error::StorageError;
 use crate::{Block, Column, DataType};
 use std::fs;
@@ -7,7 +8,7 @@ use std::io::{BufReader, ErrorKind};
 use std::path::Path;
 
 pub(crate) struct PartReader {
-    schema: Vec<(String, DataType)>,
+    schema: Schema,
     num_rows: usize,
     rows_read: usize,
     readers: Vec<(usize, ColumnReaders)>,
@@ -152,7 +153,7 @@ fn open_file(dir: &Path, name: &str) -> Result<BufReader<File>, StorageError> {
     }
 }
 
-fn parse_schema(text: &str) -> Result<(Vec<(String, DataType)>, usize), StorageError> {
+fn parse_schema(text: &str) -> Result<(Schema, usize), StorageError> {
     if text.is_empty() {
         return Err(StorageError::Corrupt("empty schema".into()));
     }
@@ -207,20 +208,7 @@ fn parse_schema(text: &str) -> Result<(Vec<(String, DataType)>, usize), StorageE
         })
         .collect::<Result<Vec<(String, DataType)>, StorageError>>()?;
 
-    if schema.is_empty() && num_rows > 0 {
-        return Err(StorageError::Corrupt(format!(
-            "num_rows={num_rows} but schema has no columns"
-        )));
-    }
-
-    for i in 1..schema.len() {
-        if schema[..i].iter().any(|(n, _)| n == &schema[i].0) {
-            return Err(StorageError::Corrupt(format!(
-                "duplicate column name '{}'",
-                schema[i].0
-            )));
-        }
-    }
+    let schema = Schema::new(schema).map_err(|error| StorageError::Corrupt(error.to_string()))?;
 
     Ok((schema, num_rows))
 }
@@ -266,12 +254,13 @@ mod tests {
 
     /// One column per `DataType`, so every fixture exercises both the single-file
     /// and the paired-file branch.
-    fn sample_schema() -> Vec<(String, DataType)> {
-        vec![
+    fn sample_schema() -> Schema {
+        Schema::new(vec![
             col("id", DataType::Int64),
             col("name", DataType::String),
             col("score", DataType::Float64),
-        ]
+        ])
+        .unwrap()
     }
 
     fn sample_block(rows: usize) -> Block {
@@ -300,7 +289,7 @@ mod tests {
     fn written_part(rows: usize) -> (TempDir, PathBuf) {
         let (root, dir) = part_dir();
 
-        let mut writer = PartWriter::new(dir.clone(), &sample_schema(), Codec::Lz4).unwrap();
+        let mut writer = PartWriter::new(dir.clone(), sample_schema(), Codec::Lz4).unwrap();
         if rows > 0 {
             writer.write_block(&sample_block(rows)).unwrap();
         }
@@ -352,22 +341,14 @@ mod tests {
 
         assert_eq!(
             schema,
-            vec![
+            Schema::new(vec![
                 col("id", DataType::Int64),
                 col("name", DataType::String),
                 col("score", DataType::Float64),
-            ]
+            ])
+            .unwrap()
         );
         assert_eq!(num_rows, 3);
-    }
-
-    /// `PartWriter`'s output for an empty schema — a part with no columns at all.
-    #[test]
-    fn parses_a_header_only_schema() {
-        let (schema, num_rows) = parse_schema("version=1\nnum_rows=0\n").unwrap();
-
-        assert_eq!(schema, vec![]);
-        assert_eq!(num_rows, 0);
     }
 
     /// Columns are matched positionally against the column files, so declaration
@@ -381,11 +362,12 @@ mod tests {
 
         assert_eq!(
             schema,
-            vec![
+            Schema::new(vec![
                 col("zulu", DataType::Float64),
                 col("alpha", DataType::String),
                 col("mike", DataType::Int64),
-            ]
+            ])
+            .unwrap()
         );
     }
 
@@ -408,7 +390,10 @@ mod tests {
     fn zero_rows_with_columns_is_valid() {
         let (schema, num_rows) = parse_schema("version=1\nnum_rows=0\ncolumn=id:Int64\n").unwrap();
 
-        assert_eq!(schema, vec![col("id", DataType::Int64)]);
+        assert_eq!(
+            schema,
+            Schema::new(vec![col("id", DataType::Int64)]).unwrap()
+        );
         assert_eq!(num_rows, 0);
     }
 
@@ -416,7 +401,10 @@ mod tests {
     fn final_newline_is_optional() {
         let (schema, num_rows) = parse_schema("version=1\nnum_rows=1\ncolumn=id:Int64").unwrap();
 
-        assert_eq!(schema, vec![col("id", DataType::Int64)]);
+        assert_eq!(
+            schema,
+            Schema::new(vec![col("id", DataType::Int64)]).unwrap()
+        );
         assert_eq!(num_rows, 1);
     }
 
@@ -556,7 +544,10 @@ mod tests {
         let (schema, num_rows) =
             parse_schema("version=1\r\nnum_rows=2\r\ncolumn=id:Int64\r\n").unwrap();
 
-        assert_eq!(schema, vec![col("id", DataType::Int64)]);
+        assert_eq!(
+            schema,
+            Schema::new(vec![col("id", DataType::Int64)]).unwrap()
+        );
         assert_eq!(num_rows, 2);
     }
 
@@ -583,32 +574,19 @@ mod tests {
         );
     }
 
-    /// Empty column names are not rejected, though `PartWriter` would emit a file
-    /// literally named `.bin` for one. Documents current behavior.
-    #[test]
-    fn accepts_an_empty_column_name() {
-        let (schema, _) = parse_schema("version=1\nnum_rows=1\ncolumn=:Int64\n").unwrap();
-
-        assert_eq!(schema, vec![col("", DataType::Int64)]);
-    }
-
     /// Only the leading `column=` is stripped, so later `=` characters belong to
     /// the name. Documents current behavior.
     #[test]
     fn accepts_a_column_name_containing_an_equals_sign() {
         let (schema, _) = parse_schema("version=1\nnum_rows=1\ncolumn=a=b:Int64\n").unwrap();
 
-        assert_eq!(schema, vec![col("a=b", DataType::Int64)]);
+        assert_eq!(
+            schema,
+            Schema::new(vec![col("a=b", DataType::Int64)]).unwrap()
+        );
     }
 
     // ---- cross-line validation -----------------------------------------
-
-    /// Rows without columns to hold them means the schema lines were lost.
-    #[test]
-    fn rejects_positive_num_rows_with_no_columns() {
-        assert!(err("version=1\nnum_rows=5\n").contains("num_rows=5 but schema has no columns"));
-    }
-
     #[test]
     fn rejects_duplicate_column_names() {
         assert!(
@@ -636,7 +614,7 @@ mod tests {
 
         assert_eq!(
             schema,
-            vec![col("id", DataType::Int64), col("ID", DataType::Int64)]
+            Schema::new(vec![col("id", DataType::Int64), col("ID", DataType::Int64)]).unwrap()
         );
     }
 
@@ -811,7 +789,7 @@ mod tests {
     #[test]
     fn an_unfinished_part_is_not_found() {
         let (_root, dir) = part_dir();
-        let mut writer = PartWriter::new(dir.clone(), &sample_schema(), Codec::Lz4).unwrap();
+        let mut writer = PartWriter::new(dir.clone(), sample_schema(), Codec::Lz4).unwrap();
         writer.write_block(&sample_block(1)).unwrap();
 
         let e = open_error(&dir, &["id"]);
@@ -824,7 +802,7 @@ mod tests {
     #[test]
     fn a_staging_directory_is_not_a_readable_part() {
         let (_root, dir) = part_dir();
-        let writer = PartWriter::new(dir.clone(), &sample_schema(), Codec::Lz4).unwrap();
+        let writer = PartWriter::new(dir.clone(), sample_schema(), Codec::Lz4).unwrap();
         drop(writer);
 
         assert!(open_err(&staging_of(&dir), &["id"]).contains("schema.txt missing"));
@@ -902,36 +880,6 @@ mod tests {
         let (_root, dir) = written_part(1);
 
         assert!(open_err(&dir, &["zzz", "aaa"]).contains("column 'zzz' not found"));
-    }
-
-    /// A part written with an empty schema is unreadable in every direction: there
-    /// is no column to project, and the empty projection is a panic. Pins the gap
-    /// the `open` assertion's backlog note refers to.
-    #[test]
-    fn a_part_with_no_columns_cannot_be_projected() {
-        let (_root, dir) = part_dir();
-        PartWriter::new(dir.clone(), &[], Codec::Lz4)
-            .unwrap()
-            .finish()
-            .unwrap();
-
-        assert!(open_err(&dir, &["id"]).contains("column 'id' not found"));
-    }
-
-    /// `parse_schema` accepts an empty column name and `PartWriter` emits a file
-    /// literally named `.bin` for it, so the round trip holds. Documents current
-    /// behavior.
-    #[test]
-    fn opens_a_column_with_an_empty_name() {
-        let (_root, dir) = part_dir();
-        PartWriter::new(dir.clone(), &[col("", DataType::Int64)], Codec::Lz4)
-            .unwrap()
-            .finish()
-            .unwrap();
-
-        let reader = PartReader::open(&dir, &[""]).unwrap();
-
-        assert_eq!(reader_indices(&reader), vec![0]);
     }
 
     // ---- open: corrupt column files ------------------------------------
@@ -1084,7 +1032,7 @@ mod tests {
     fn written_part_blocks(rows_per_block: &[usize]) -> (TempDir, PathBuf) {
         let (root, dir) = part_dir();
 
-        let mut writer = PartWriter::new(dir.clone(), &sample_schema(), Codec::Lz4).unwrap();
+        let mut writer = PartWriter::new(dir.clone(), sample_schema(), Codec::Lz4).unwrap();
         let mut start = 0i64;
         for &rows in rows_per_block {
             writer.write_block(&sample_block_at(start, rows)).unwrap();
@@ -1098,14 +1046,14 @@ mod tests {
     /// A part with a hand-written `schema.txt` and an empty file for every column
     /// it declares. The empty files are not incidental: `open` refuses a part with
     /// a missing column file, so even a file the test never appends to must exist.
-    fn hand_built_part(num_rows: usize, schema: &[(String, DataType)]) -> (TempDir, PathBuf) {
+    fn hand_built_part(num_rows: usize, schema: &Schema) -> (TempDir, PathBuf) {
         let mut text = format!("version=1\nnum_rows={num_rows}\n");
-        for (name, dt) in schema {
+        for (name, dt) in schema.iter() {
             text.push_str(&format!("column={name}:{}\n", dt.as_str()));
         }
 
         let (root, dir) = part_with_schema_text(&text);
-        for (name, dt) in schema {
+        for (name, dt) in schema.iter() {
             match dt {
                 DataType::Int64 | DataType::Float64 => {
                     File::create(dir.join(format!("{name}.bin"))).unwrap();
@@ -1175,7 +1123,11 @@ mod tests {
     /// exactly the given chunk sequences. Most desync and truncation fixtures are
     /// a single call to this.
     fn numeric_part(num_rows: usize, ids: &[&[i64]], scores: &[&[f64]]) -> (TempDir, PathBuf) {
-        let schema = vec![col("id", DataType::Int64), col("score", DataType::Float64)];
+        let schema = Schema::new(vec![
+            col("id", DataType::Int64),
+            col("score", DataType::Float64),
+        ])
+        .unwrap();
         let (root, dir) = hand_built_part(num_rows, &schema);
 
         for chunk in ids {
@@ -1358,7 +1310,7 @@ mod tests {
     fn string_values_survive_the_round_trip() {
         let (_root, dir) = part_dir();
         let names = string_column(&["", "日本語", "a"]);
-        let mut writer = PartWriter::new(dir.clone(), &sample_schema(), Codec::Lz4).unwrap();
+        let mut writer = PartWriter::new(dir.clone(), sample_schema(), Codec::Lz4).unwrap();
         writer
             .write_block(&Block::new(
                 vec![
@@ -1383,7 +1335,7 @@ mod tests {
     fn extreme_numeric_values_survive_the_round_trip() {
         let (_root, dir) = part_dir();
         let scores = vec![f64::NAN, f64::INFINITY, f64::NEG_INFINITY];
-        let mut writer = PartWriter::new(dir.clone(), &sample_schema(), Codec::Lz4).unwrap();
+        let mut writer = PartWriter::new(dir.clone(), sample_schema(), Codec::Lz4).unwrap();
         writer
             .write_block(&Block::new(
                 vec![
@@ -1623,7 +1575,11 @@ mod tests {
     /// `Vec::len` — the sync check has to see through both.
     #[test]
     fn desync_between_a_numeric_and_a_string_column_is_detected() {
-        let schema = vec![col("id", DataType::Int64), col("name", DataType::String)];
+        let schema = Schema::new(vec![
+            col("id", DataType::Int64),
+            col("name", DataType::String),
+        ])
+        .unwrap();
         let (_root, dir) = hand_built_part(2, &schema);
         append_chunk(&dir, "id", &Column::Int64(vec![1, 2]));
         append_chunk(&dir, "name", &Column::String(string_column(&["x"])));
@@ -1762,7 +1718,10 @@ mod tests {
     /// passes it through rather than reclassifying it as its own out-of-sync error.
     #[test]
     fn string_stream_desync_surfaces_as_a_codec_error() {
-        let (_root, dir) = hand_built_part(1, &[col("name", DataType::String)]);
+        let (_root, dir) = hand_built_part(
+            1,
+            &Schema::new(vec![col("name", DataType::String)]).unwrap(),
+        );
         append_chunk(&dir, "name", &Column::String(string_column(&["x"])));
         append_raw(&dir, "name.data.bin", &framed(b"y"));
         let mut reader = PartReader::open(&dir, &["name"]).unwrap();
@@ -1782,7 +1741,11 @@ mod tests {
     /// column has already ended.
     #[test]
     fn a_codec_error_outranks_the_out_of_sync_check() {
-        let schema = vec![col("id", DataType::Int64), col("name", DataType::String)];
+        let schema = Schema::new(vec![
+            col("id", DataType::Int64),
+            col("name", DataType::String),
+        ])
+        .unwrap();
         let (_root, dir) = hand_built_part(1, &schema);
         append_chunk(&dir, "id", &Column::Int64(vec![1]));
         append_chunk(&dir, "name", &Column::String(string_column(&["x"])));
@@ -1867,29 +1830,6 @@ mod tests {
     }
 
     // ---- next_block: pinned current behavior ----------------------------
-
-    /// `opens_a_column_with_an_empty_name` carried through to the read path: the
-    /// file is literally named `.bin` and decodes like any other.
-    /// Documents current behavior.
-    #[test]
-    fn a_column_with_an_empty_name_can_be_read() {
-        let (_root, dir) = part_dir();
-        let mut writer =
-            PartWriter::new(dir.clone(), &[col("", DataType::Int64)], Codec::Lz4).unwrap();
-        writer
-            .write_block(&Block::new(
-                vec![("".to_string(), Column::Int64(vec![7]))],
-                1,
-            ))
-            .unwrap();
-        writer.finish().unwrap();
-
-        let mut reader = PartReader::open(&dir, &[""]).unwrap();
-        let block = reader.next_block().unwrap().unwrap();
-
-        assert_eq!(block.column(""), Some(&Column::Int64(vec![7])));
-        assert!(reader.next_block().unwrap().is_none());
-    }
 
     /// `num_rows` is header state and `rows_read` is cursor state; only the latter
     /// moves. Reading must not "fix up" a part's declared size.

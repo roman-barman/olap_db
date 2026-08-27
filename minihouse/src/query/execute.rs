@@ -100,6 +100,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Schema;
     use crate::aggregate::AggKind;
     use crate::block::Block;
     use crate::codec::Codec;
@@ -107,7 +108,6 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use tempfile::TempDir;
-
     // ---- fixtures ------------------------------------------------------
 
     fn string_column(values: &[&str]) -> StringColumn {
@@ -118,12 +118,13 @@ mod tests {
         col
     }
 
-    fn sample_schema() -> Vec<(String, DataType)> {
-        vec![
+    fn sample_schema() -> Schema {
+        Schema::new(vec![
             ("id".to_string(), DataType::Int64),
             ("name".to_string(), DataType::String),
             ("score".to_string(), DataType::Float64),
-        ]
+        ])
+        .unwrap()
     }
 
     fn sample_block(ids: &[i64], names: &[&str], scores: &[f64]) -> Block {

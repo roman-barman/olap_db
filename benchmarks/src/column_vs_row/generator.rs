@@ -1,7 +1,7 @@
 use crate::column_vs_row::row_table::{Row, RowTable};
-use minihouse::Column;
 use minihouse::DataType;
 use minihouse::{Block, Codec};
+use minihouse::{Column, Schema};
 use rand::prelude::StdRng;
 use rand::{RngExt, SeedableRng};
 
@@ -64,11 +64,12 @@ fn make_block(id: Column, ts: Column, url: Column, dur: Column) -> Block {
     )
 }
 
-pub(super) fn schema() -> Vec<(String, DataType)> {
-    vec![
+pub(super) fn schema() -> Schema {
+    Schema::new(vec![
         ("id".into(), DataType::Int64),
         ("ts".into(), DataType::Int64),
         ("url".into(), DataType::String),
         ("dur".into(), DataType::Int64),
-    ]
+    ])
+    .unwrap()
 }

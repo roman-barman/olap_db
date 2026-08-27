@@ -1,5 +1,6 @@
 use crate::codec::{Codec, CodecError};
 use crate::column_io::{write_f64_chunk, write_i64_chunk, write_str_chunk};
+use crate::schema::Schema;
 use crate::{Block, Column, DataType};
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -8,18 +9,14 @@ use std::path::PathBuf;
 pub(crate) struct PartWriter {
     dir: PathBuf,
     tmp_dir: PathBuf,
-    schema: Vec<(String, DataType)>,
+    schema: Schema,
     writers: Vec<ColumnFiles>,
     num_rows: usize,
     codec: Codec,
 }
 
 impl PartWriter {
-    pub(crate) fn new(
-        dir: PathBuf,
-        schema: &[(String, DataType)],
-        codec: Codec,
-    ) -> std::io::Result<Self> {
+    pub(crate) fn new(dir: PathBuf, schema: Schema, codec: Codec) -> std::io::Result<Self> {
         let tmp_dir = {
             let mut name = dir
                 .file_name()
@@ -56,7 +53,7 @@ impl PartWriter {
         Ok(Self {
             dir,
             tmp_dir,
-            schema: schema.to_vec(),
+            schema,
             writers,
             num_rows: 0,
             codec,
@@ -166,12 +163,13 @@ mod tests {
         col
     }
 
-    fn sample_schema() -> Vec<(String, DataType)> {
-        vec![
+    fn sample_schema() -> Schema {
+        Schema::new(vec![
             ("id".to_string(), DataType::Int64),
             ("name".to_string(), DataType::String),
             ("score".to_string(), DataType::Float64),
-        ]
+        ])
+        .unwrap()
     }
 
     fn sample_block(ids: &[i64], names: &[&str], scores: &[f64]) -> Block {
@@ -239,7 +237,7 @@ mod tests {
     fn single_block_round_trips_all_three_column_types() {
         let (_root, dir) = part_dir();
 
-        let mut writer = PartWriter::new(dir.clone(), &sample_schema(), Codec::Lz4).unwrap();
+        let mut writer = PartWriter::new(dir.clone(), sample_schema(), Codec::Lz4).unwrap();
         writer
             .write_block(&sample_block(
                 &[1, -2, i64::MAX],
@@ -261,7 +259,7 @@ mod tests {
     fn multiple_blocks_are_read_back_in_write_order() {
         let (_root, dir) = part_dir();
 
-        let mut writer = PartWriter::new(dir.clone(), &sample_schema(), Codec::Lz4).unwrap();
+        let mut writer = PartWriter::new(dir.clone(), sample_schema(), Codec::Lz4).unwrap();
         writer
             .write_block(&sample_block(&[1, 2], &["a", "b"], &[1.0, 2.0]))
             .unwrap();
@@ -295,7 +293,7 @@ mod tests {
     fn zero_blocks_produces_empty_column_files() {
         let (_root, dir) = part_dir();
 
-        PartWriter::new(dir.clone(), &sample_schema(), Codec::Lz4)
+        PartWriter::new(dir.clone(), sample_schema(), Codec::Lz4)
             .unwrap()
             .finish()
             .unwrap();
@@ -314,7 +312,7 @@ mod tests {
     fn empty_block_writes_a_zero_length_chunk() {
         let (_root, dir) = part_dir();
 
-        let mut writer = PartWriter::new(dir.clone(), &sample_schema(), Codec::Lz4).unwrap();
+        let mut writer = PartWriter::new(dir.clone(), sample_schema(), Codec::Lz4).unwrap();
         writer.write_block(&sample_block(&[], &[], &[])).unwrap();
         writer
             .write_block(&sample_block(&[7], &["x"], &[7.5]))
@@ -335,7 +333,7 @@ mod tests {
     fn finish_flushes_buffered_writes() {
         let (_root, dir) = part_dir();
 
-        let mut writer = PartWriter::new(dir.clone(), &sample_schema(), Codec::Lz4).unwrap();
+        let mut writer = PartWriter::new(dir.clone(), sample_schema(), Codec::Lz4).unwrap();
         writer
             .write_block(&sample_block(&[42], &["tiny"], &[0.5]))
             .unwrap();
@@ -352,7 +350,7 @@ mod tests {
     fn schema_file_has_exact_expected_contents() {
         let (_root, dir) = part_dir();
 
-        let mut writer = PartWriter::new(dir.clone(), &sample_schema(), Codec::Lz4).unwrap();
+        let mut writer = PartWriter::new(dir.clone(), sample_schema(), Codec::Lz4).unwrap();
         writer
             .write_block(&sample_block(
                 &[1, 2, 3],
@@ -371,13 +369,14 @@ mod tests {
     #[test]
     fn schema_file_preserves_declaration_order() {
         let (_root, dir) = part_dir();
-        let schema = vec![
+        let schema = Schema::new(vec![
             ("zulu".to_string(), DataType::Float64),
             ("alpha".to_string(), DataType::String),
             ("mike".to_string(), DataType::Int64),
-        ];
+        ])
+        .unwrap();
 
-        PartWriter::new(dir.clone(), &schema, Codec::Lz4)
+        PartWriter::new(dir.clone(), schema, Codec::Lz4)
             .unwrap()
             .finish()
             .unwrap();
@@ -392,7 +391,7 @@ mod tests {
     fn num_rows_accumulates_across_blocks() {
         let (_root, dir) = part_dir();
 
-        let mut writer = PartWriter::new(dir.clone(), &sample_schema(), Codec::Lz4).unwrap();
+        let mut writer = PartWriter::new(dir.clone(), sample_schema(), Codec::Lz4).unwrap();
         writer
             .write_block(&sample_block(&[1, 2], &["a", "b"], &[1.0, 2.0]))
             .unwrap();
@@ -409,39 +408,13 @@ mod tests {
         assert!(schema_text(&dir).contains("num_rows=5\n"));
     }
 
-    #[test]
-    fn empty_schema_writes_header_only() {
-        let (_root, dir) = part_dir();
-
-        PartWriter::new(dir.clone(), &[], Codec::Lz4)
-            .unwrap()
-            .finish()
-            .unwrap();
-
-        assert_eq!(entries(&dir), vec!["schema.txt"]);
-        assert_eq!(schema_text(&dir), "version=1\nnum_rows=0\n");
-    }
-
-    /// `num_rows` comes from `Block::num_rows`, not from any column, so a
-    /// column-less block still moves the counter.
-    #[test]
-    fn column_less_blocks_still_count_rows() {
-        let (_root, dir) = part_dir();
-
-        let mut writer = PartWriter::new(dir.clone(), &[], Codec::Lz4).unwrap();
-        writer.write_block(&Block::new(vec![], 5)).unwrap();
-        writer.finish().unwrap();
-
-        assert_eq!(schema_text(&dir), "version=1\nnum_rows=5\n");
-    }
-
     // ---- file layout ---------------------------------------------------
 
     #[test]
     fn part_directory_contains_one_file_per_numeric_and_two_per_string_column() {
         let (_root, dir) = part_dir();
 
-        PartWriter::new(dir.clone(), &sample_schema(), Codec::Lz4)
+        PartWriter::new(dir.clone(), sample_schema(), Codec::Lz4)
             .unwrap()
             .finish()
             .unwrap();
@@ -463,7 +436,7 @@ mod tests {
         let root = TempDir::new().unwrap();
         let dir = root.path().join("nested/deeper/part_0");
 
-        PartWriter::new(dir.clone(), &sample_schema(), Codec::Lz4)
+        PartWriter::new(dir.clone(), sample_schema(), Codec::Lz4)
             .unwrap()
             .finish()
             .unwrap();
@@ -478,7 +451,7 @@ mod tests {
         let (_root, dir) = part_dir();
         let staging = staging_of(&dir);
 
-        let mut writer = PartWriter::new(dir.clone(), &sample_schema(), Codec::Lz4).unwrap();
+        let mut writer = PartWriter::new(dir.clone(), sample_schema(), Codec::Lz4).unwrap();
         writer
             .write_block(&sample_block(&[1], &["a"], &[1.0]))
             .unwrap();
@@ -499,7 +472,7 @@ mod tests {
         let (_root, dir) = part_dir();
 
         {
-            let mut writer = PartWriter::new(dir.clone(), &sample_schema(), Codec::Lz4).unwrap();
+            let mut writer = PartWriter::new(dir.clone(), sample_schema(), Codec::Lz4).unwrap();
             writer
                 .write_block(&sample_block(&[1], &["a"], &[1.0]))
                 .unwrap();
@@ -515,7 +488,7 @@ mod tests {
     fn dropping_without_finish_leaves_staging_dir_behind() {
         let (_root, dir) = part_dir();
 
-        drop(PartWriter::new(dir.clone(), &sample_schema(), Codec::Lz4).unwrap());
+        drop(PartWriter::new(dir.clone(), sample_schema(), Codec::Lz4).unwrap());
 
         assert!(staging_of(&dir).is_dir());
     }
@@ -526,7 +499,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("existing.bin"), b"old").unwrap();
 
-        let writer = PartWriter::new(dir.clone(), &sample_schema(), Codec::Lz4).unwrap();
+        let writer = PartWriter::new(dir.clone(), sample_schema(), Codec::Lz4).unwrap();
         let err = writer.finish().unwrap_err();
 
         assert!(err.raw_os_error().is_some(), "expected an OS rename error");
@@ -540,7 +513,7 @@ mod tests {
         let (_root, dir) = part_dir();
         fs::create_dir_all(&dir).unwrap();
 
-        PartWriter::new(dir.clone(), &sample_schema(), Codec::Lz4)
+        PartWriter::new(dir.clone(), sample_schema(), Codec::Lz4)
             .unwrap()
             .finish()
             .unwrap();
@@ -557,7 +530,7 @@ mod tests {
         fs::create_dir_all(&staging).unwrap();
         fs::write(staging.join("orphan.bin"), b"stale").unwrap();
 
-        let writer = PartWriter::new(dir.clone(), &sample_schema(), Codec::Lz4).unwrap();
+        let writer = PartWriter::new(dir.clone(), sample_schema(), Codec::Lz4).unwrap();
 
         assert_eq!(
             entries(&staging),
@@ -593,7 +566,7 @@ mod tests {
         fs::write(staging.join("score.bin"), b"garbage-score").unwrap();
         fs::write(staging.join("schema.txt"), b"version=0\nnum_rows=99\n").unwrap();
 
-        let mut writer = PartWriter::new(dir.clone(), &sample_schema(), Codec::Lz4).unwrap();
+        let mut writer = PartWriter::new(dir.clone(), sample_schema(), Codec::Lz4).unwrap();
         writer
             .write_block(&sample_block(&[7], &["x"], &[7.5]))
             .unwrap();
@@ -614,7 +587,7 @@ mod tests {
     #[should_panic(expected = "block has 2 columns, schema has 3")]
     fn write_block_panics_on_column_count_mismatch() {
         let (_root, dir) = part_dir();
-        let mut writer = PartWriter::new(dir, &sample_schema(), Codec::Lz4).unwrap();
+        let mut writer = PartWriter::new(dir, sample_schema(), Codec::Lz4).unwrap();
 
         let block = Block::new(
             vec![
@@ -630,7 +603,7 @@ mod tests {
     #[should_panic(expected = "column 1 expected ('name', String)")]
     fn write_block_panics_on_column_name_mismatch() {
         let (_root, dir) = part_dir();
-        let mut writer = PartWriter::new(dir, &sample_schema(), Codec::Lz4).unwrap();
+        let mut writer = PartWriter::new(dir, sample_schema(), Codec::Lz4).unwrap();
 
         let block = Block::new(
             vec![
@@ -647,7 +620,7 @@ mod tests {
     #[should_panic(expected = "column 0 expected ('id', Int64), got ('id', Float64)")]
     fn write_block_panics_on_type_mismatch() {
         let (_root, dir) = part_dir();
-        let mut writer = PartWriter::new(dir, &sample_schema(), Codec::Lz4).unwrap();
+        let mut writer = PartWriter::new(dir, sample_schema(), Codec::Lz4).unwrap();
 
         let block = Block::new(
             vec![
@@ -666,7 +639,7 @@ mod tests {
     #[should_panic(expected = "column 1 expected ('name', String)")]
     fn write_block_panics_on_reordered_columns() {
         let (_root, dir) = part_dir();
-        let mut writer = PartWriter::new(dir, &sample_schema(), Codec::Lz4).unwrap();
+        let mut writer = PartWriter::new(dir, sample_schema(), Codec::Lz4).unwrap();
 
         let block = Block::new(
             vec![
@@ -683,6 +656,6 @@ mod tests {
     #[should_panic(expected = "part dir must have a file name")]
     fn new_panics_when_dir_has_no_file_name() {
         // Panics before any filesystem call, so nothing touches the root.
-        let _ = PartWriter::new(PathBuf::from("/"), &sample_schema(), Codec::Lz4);
+        let _ = PartWriter::new(PathBuf::from("/"), sample_schema(), Codec::Lz4);
     }
 }
