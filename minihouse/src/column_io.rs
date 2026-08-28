@@ -163,14 +163,6 @@ mod tests {
         read_str_chunk(&mut data, &mut offsets).unwrap()
     }
 
-    fn string_column(values: &[&str]) -> StringColumn {
-        let mut col = StringColumn::new();
-        for v in values {
-            col.push(v);
-        }
-        col
-    }
-
     /// One well-framed block carrying `raw`, rewound and ready to read.
     fn block(raw: &[u8]) -> Cursor<Vec<u8>> {
         let mut buf = Cursor::new(Vec::new());
@@ -311,7 +303,7 @@ mod tests {
 
     #[test]
     fn str_chunk_round_trips_values() {
-        let col = string_column(&["hello", "world", "foo"]);
+        let col = StringColumn::new_with_values(&["hello", "world", "foo"]);
         assert_eq!(round_trip_str(&col), Some(col.clone()));
     }
 
@@ -323,7 +315,7 @@ mod tests {
 
     #[test]
     fn str_chunk_round_trips_column_with_empty_strings() {
-        let col = string_column(&["", "a", "", ""]);
+        let col = StringColumn::new_with_values(&["", "a", "", ""]);
         let got = round_trip_str(&col).unwrap();
 
         assert_eq!(got, col);
@@ -334,7 +326,7 @@ mod tests {
 
     #[test]
     fn str_chunk_round_trips_multibyte_utf8() {
-        let col = string_column(&["café", "日本語", ""]);
+        let col = StringColumn::new_with_values(&["café", "日本語", ""]);
         let got = round_trip_str(&col).unwrap();
 
         assert_eq!(got, col);
@@ -344,7 +336,8 @@ mod tests {
 
     #[test]
     fn str_chunk_round_trips_filtered_column() {
-        let col = string_column(&["a", "b", "c", "d"]).filter(&[true, false, true, false]);
+        let col = StringColumn::new_with_values(&["a", "b", "c", "d"])
+            .filter(&[true, false, true, false]);
         let got = round_trip_str(&col).unwrap();
 
         assert_eq!(got, col);
@@ -355,9 +348,9 @@ mod tests {
 
     #[test]
     fn str_chunk_reads_sequential_chunks_in_order() {
-        let first = string_column(&["a", "bc"]);
+        let first = StringColumn::new_with_values(&["a", "bc"]);
         let second = StringColumn::new();
-        let third = string_column(&["日本語"]);
+        let third = StringColumn::new_with_values(&["日本語"]);
 
         let mut data = Cursor::new(Vec::new());
         let mut offsets = Cursor::new(Vec::new());
@@ -417,7 +410,7 @@ mod tests {
 
     #[test]
     fn read_str_chunk_detects_desync_after_a_successful_chunk() {
-        let first = string_column(&["a", "b"]);
+        let first = StringColumn::new_with_values(&["a", "b"]);
 
         let mut data = Cursor::new(Vec::new());
         let mut offsets = Cursor::new(Vec::new());

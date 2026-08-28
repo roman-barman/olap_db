@@ -108,14 +108,6 @@ fn filter_slice<T: Clone>(v: &[T], mask: &[bool], cap: usize) -> Vec<T> {
 mod tests {
     use super::*;
 
-    fn string_column(values: &[&str]) -> StringColumn {
-        let mut col = StringColumn::new();
-        for v in values {
-            col.push(v);
-        }
-        col
-    }
-
     #[test]
     fn new_and_with_capacity() {
         for dt in [DataType::Int64, DataType::Float64, DataType::String] {
@@ -185,7 +177,10 @@ mod tests {
         c.push_str(&borrowed);
         c.push_str("");
         c.push_str("world");
-        assert_eq!(c, Column::String(string_column(&["hello", "", "world"])));
+        assert_eq!(
+            c,
+            Column::String(StringColumn::new_with_values(&["hello", "", "world"]))
+        );
     }
 
     #[test]
@@ -240,9 +235,12 @@ mod tests {
 
     #[test]
     fn filter_keeps_masked_in_elements_in_order_string() {
-        let c = Column::String(string_column(&["a", "b", "c"]));
+        let c = Column::String(StringColumn::new_with_values(&["a", "b", "c"]));
         let mask = [true, false, true];
-        assert_eq!(c.filter(&mask), Column::String(string_column(&["a", "c"])));
+        assert_eq!(
+            c.filter(&mask),
+            Column::String(StringColumn::new_with_values(&["a", "c"]))
+        );
     }
 
     #[test]

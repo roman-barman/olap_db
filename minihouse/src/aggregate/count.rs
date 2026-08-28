@@ -25,14 +25,6 @@ mod tests {
     use crate::DataType;
     use crate::string_column::StringColumn;
 
-    fn string_column(values: &[&str]) -> StringColumn {
-        let mut col = StringColumn::new();
-        for v in values {
-            col.push(v);
-        }
-        col
-    }
-
     #[test]
     fn count_default_result_is_zero() {
         let count = Count::default();
@@ -56,7 +48,9 @@ mod tests {
     #[test]
     fn count_update_string_column_adds_len() {
         let mut count = Count::default();
-        count.update(&Column::String(string_column(&["a", "b", "c", "d"])));
+        count.update(&Column::String(StringColumn::new_with_values(&[
+            "a", "b", "c", "d",
+        ])));
         assert_eq!(count.result(), Some(Value::Int64(4)));
     }
 

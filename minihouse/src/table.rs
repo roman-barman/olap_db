@@ -291,14 +291,6 @@ mod tests {
         (root, dir)
     }
 
-    fn string_column(values: &[&str]) -> StringColumn {
-        let mut col = StringColumn::new();
-        for v in values {
-            col.push(v);
-        }
-        col
-    }
-
     /// One column per `DataType`, so every fixture exercises both the
     /// single-file and the paired-file branch of the part format.
     fn sample_schema() -> Schema {
@@ -316,7 +308,10 @@ mod tests {
         Block::new(
             vec![
                 ("id".to_string(), Column::Int64(ids.to_vec())),
-                ("name".to_string(), Column::String(string_column(names))),
+                (
+                    "name".to_string(),
+                    Column::String(StringColumn::new_with_values(names)),
+                ),
                 ("score".to_string(), Column::Float64(scores.to_vec())),
             ],
             ids.len(),
@@ -902,7 +897,10 @@ mod tests {
         let block = Block::new(
             vec![
                 ("id".to_string(), Column::Int64(vec![1])),
-                ("name".to_string(), Column::String(string_column(&["a"]))),
+                (
+                    "name".to_string(),
+                    Column::String(StringColumn::new_with_values(&["a"])),
+                ),
             ],
             1,
         );
@@ -923,7 +921,10 @@ mod tests {
         let block = Block::new(
             vec![
                 ("id".to_string(), Column::Int64(vec![1])),
-                ("name".to_string(), Column::String(string_column(&["a"]))),
+                (
+                    "name".to_string(),
+                    Column::String(StringColumn::new_with_values(&["a"])),
+                ),
                 ("extra".to_string(), Column::Float64(vec![1.0])),
             ],
             1,
@@ -939,7 +940,10 @@ mod tests {
         let block = Block::new(
             vec![
                 ("wrong".to_string(), Column::Int64(vec![1])),
-                ("name".to_string(), Column::String(string_column(&["a"]))),
+                (
+                    "name".to_string(),
+                    Column::String(StringColumn::new_with_values(&["a"])),
+                ),
                 ("score".to_string(), Column::Float64(vec![1.0])),
             ],
             1,
@@ -955,7 +959,10 @@ mod tests {
         let block = Block::new(
             vec![
                 ("id".to_string(), Column::Int64(vec![1])),
-                ("name".to_string(), Column::String(string_column(&["a"]))),
+                (
+                    "name".to_string(),
+                    Column::String(StringColumn::new_with_values(&["a"])),
+                ),
                 ("bad".to_string(), Column::Float64(vec![1.0])),
             ],
             1,
@@ -971,7 +978,10 @@ mod tests {
         let block = Block::new(
             vec![
                 ("id".to_string(), Column::Float64(vec![1.0])),
-                ("name".to_string(), Column::String(string_column(&["a"]))),
+                (
+                    "name".to_string(),
+                    Column::String(StringColumn::new_with_values(&["a"])),
+                ),
                 ("score".to_string(), Column::Float64(vec![1.0])),
             ],
             1,
@@ -988,7 +998,10 @@ mod tests {
         let (_root, _dir, mut table) = sample_table();
         let block = Block::new(
             vec![
-                ("name".to_string(), Column::String(string_column(&["a"]))),
+                (
+                    "name".to_string(),
+                    Column::String(StringColumn::new_with_values(&["a"])),
+                ),
                 ("id".to_string(), Column::Int64(vec![1])),
                 ("score".to_string(), Column::Float64(vec![1.0])),
             ],

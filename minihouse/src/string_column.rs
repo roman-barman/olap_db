@@ -12,6 +12,15 @@ impl StringColumn {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn new_with_values(values: &[&str]) -> Self {
+        let mut column = Self::new();
+        for value in values {
+            column.push(value);
+        }
+        column
+    }
+
     pub(crate) fn with_capacity(capacity: usize, bytes: usize) -> Self {
         let mut offset = Vec::with_capacity(capacity + 1);
         offset.push(0);

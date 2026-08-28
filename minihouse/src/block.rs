@@ -72,20 +72,12 @@ mod tests {
     use super::*;
     use crate::string_column::StringColumn;
 
-    fn string_column(values: &[&str]) -> StringColumn {
-        let mut col = StringColumn::new();
-        for v in values {
-            col.push(v);
-        }
-        col
-    }
-
     fn sample_columns() -> Vec<(String, Column)> {
         vec![
             ("id".to_string(), Column::Int64(vec![1, 2, 3])),
             (
                 "name".to_string(),
-                Column::String(string_column(&["a", "b", "c"])),
+                Column::String(StringColumn::new_with_values(&["a", "b", "c"])),
             ),
             ("score".to_string(), Column::Float64(vec![1.5, 2.5, 3.5])),
         ]
@@ -98,7 +90,9 @@ mod tests {
         assert_eq!(block.column("id"), Some(&Column::Int64(vec![1, 2, 3])));
         assert_eq!(
             block.column("name"),
-            Some(&Column::String(string_column(&["a", "b", "c"])))
+            Some(&Column::String(StringColumn::new_with_values(&[
+                "a", "b", "c"
+            ])))
         );
         assert_eq!(
             block.column("score"),
@@ -233,7 +227,7 @@ mod tests {
         assert_eq!(filtered.column("id"), Some(&Column::Int64(vec![1, 3])));
         assert_eq!(
             filtered.column("name"),
-            Some(&Column::String(string_column(&["a", "c"])))
+            Some(&Column::String(StringColumn::new_with_values(&["a", "c"])))
         );
         assert_eq!(
             filtered.column("score"),
@@ -258,7 +252,9 @@ mod tests {
         assert_eq!(block.column("id"), Some(&Column::Int64(vec![1, 2, 3])));
         assert_eq!(
             block.column("name"),
-            Some(&Column::String(string_column(&["a", "b", "c"])))
+            Some(&Column::String(StringColumn::new_with_values(&[
+                "a", "b", "c"
+            ])))
         );
     }
 

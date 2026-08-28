@@ -1018,14 +1018,6 @@ mod tests {
         )
     }
 
-    fn string_column(values: &[&str]) -> StringColumn {
-        let mut column = StringColumn::new();
-        for v in values {
-            column.push(v);
-        }
-        column
-    }
-
     /// A finished part whose blocks have the given row counts, in order.
     /// `PartWriter::write_block` never splits or merges a block, so repeated calls
     /// are the only honest way to get more than one chunk per column file.
@@ -1200,7 +1192,9 @@ mod tests {
         assert_eq!(block.column("id"), Some(&Column::Int64(vec![0, 1, 2])));
         assert_eq!(
             block.column("name"),
-            Some(&Column::String(string_column(&["n0", "n1", "n2"])))
+            Some(&Column::String(StringColumn::new_with_values(&[
+                "n0", "n1", "n2"
+            ])))
         );
         assert_eq!(
             block.column("score"),
@@ -1309,7 +1303,7 @@ mod tests {
     #[test]
     fn string_values_survive_the_round_trip() {
         let (_root, dir) = part_dir();
-        let names = string_column(&["", "日本語", "a"]);
+        let names = StringColumn::new_with_values(&["", "日本語", "a"]);
         let mut writer = PartWriter::new(dir.clone(), sample_schema(), Codec::Lz4).unwrap();
         writer
             .write_block(&Block::new(
@@ -1342,7 +1336,7 @@ mod tests {
                     ("id".to_string(), Column::Int64(vec![i64::MIN, 0, i64::MAX])),
                     (
                         "name".to_string(),
-                        Column::String(string_column(&["a", "b", "c"])),
+                        Column::String(StringColumn::new_with_values(&["a", "b", "c"])),
                     ),
                     ("score".to_string(), Column::Float64(scores.clone())),
                 ],
@@ -1582,7 +1576,11 @@ mod tests {
         .unwrap();
         let (_root, dir) = hand_built_part(2, &schema);
         append_chunk(&dir, "id", &Column::Int64(vec![1, 2]));
-        append_chunk(&dir, "name", &Column::String(string_column(&["x"])));
+        append_chunk(
+            &dir,
+            "name",
+            &Column::String(StringColumn::new_with_values(&["x"])),
+        );
         let mut reader = PartReader::open(&dir, &["id", "name"]).unwrap();
 
         assert!(next_err(&mut reader).contains("'name' chunk has 1 rows, expected 2"));
@@ -1594,7 +1592,11 @@ mod tests {
     fn the_first_disagreeing_column_is_the_one_reported() {
         let (_root, dir) = hand_built_part(3, &sample_schema());
         append_chunk(&dir, "id", &Column::Int64(vec![1, 2, 3]));
-        append_chunk(&dir, "name", &Column::String(string_column(&["x"])));
+        append_chunk(
+            &dir,
+            "name",
+            &Column::String(StringColumn::new_with_values(&["x"])),
+        );
         append_chunk(&dir, "score", &Column::Float64(vec![1.0, 2.0]));
         let mut reader = PartReader::open(&dir, &["id", "name", "score"]).unwrap();
 
@@ -1722,7 +1724,11 @@ mod tests {
             1,
             &Schema::new(vec![col("name", DataType::String)]).unwrap(),
         );
-        append_chunk(&dir, "name", &Column::String(string_column(&["x"])));
+        append_chunk(
+            &dir,
+            "name",
+            &Column::String(StringColumn::new_with_values(&["x"])),
+        );
         append_raw(&dir, "name.data.bin", &framed(b"y"));
         let mut reader = PartReader::open(&dir, &["name"]).unwrap();
 
@@ -1748,7 +1754,11 @@ mod tests {
         .unwrap();
         let (_root, dir) = hand_built_part(1, &schema);
         append_chunk(&dir, "id", &Column::Int64(vec![1]));
-        append_chunk(&dir, "name", &Column::String(string_column(&["x"])));
+        append_chunk(
+            &dir,
+            "name",
+            &Column::String(StringColumn::new_with_values(&["x"])),
+        );
         append_raw(&dir, "name.data.bin", &framed(b"y"));
         let mut reader = PartReader::open(&dir, &["id", "name"]).unwrap();
         reader.next_block().unwrap().unwrap();
@@ -1790,8 +1800,16 @@ mod tests {
         let (_root, dir) = hand_built_part(3, &sample_schema());
         append_chunk(&dir, "id", &Column::Int64(vec![1, 2]));
         append_chunk(&dir, "id", &Column::Int64(vec![3]));
-        append_chunk(&dir, "name", &Column::String(string_column(&["x"])));
-        append_chunk(&dir, "name", &Column::String(string_column(&["y"])));
+        append_chunk(
+            &dir,
+            "name",
+            &Column::String(StringColumn::new_with_values(&["x"])),
+        );
+        append_chunk(
+            &dir,
+            "name",
+            &Column::String(StringColumn::new_with_values(&["y"])),
+        );
         append_chunk(&dir, "score", &Column::Float64(vec![9.0]));
         let mut reader = PartReader::open(&dir, &["id", "name", "score"]).unwrap();
 

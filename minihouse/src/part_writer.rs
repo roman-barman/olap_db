@@ -155,14 +155,6 @@ mod tests {
         dir.with_file_name(name)
     }
 
-    fn string_column(values: &[&str]) -> StringColumn {
-        let mut col = StringColumn::new();
-        for v in values {
-            col.push(v);
-        }
-        col
-    }
-
     fn sample_schema() -> Schema {
         Schema::new(vec![
             ("id".to_string(), DataType::Int64),
@@ -178,7 +170,10 @@ mod tests {
         Block::new(
             vec![
                 ("id".to_string(), Column::Int64(ids.to_vec())),
-                ("name".to_string(), Column::String(string_column(names))),
+                (
+                    "name".to_string(),
+                    Column::String(StringColumn::new_with_values(names)),
+                ),
                 ("score".to_string(), Column::Float64(scores.to_vec())),
             ],
             ids.len(),
@@ -251,7 +246,7 @@ mod tests {
         assert_eq!(f64_chunks(&dir, "score"), vec![vec![1.5, -2.5, 0.0]]);
         assert_eq!(
             str_chunks(&dir, "name"),
-            vec![string_column(&["a", "", "日本語"])]
+            vec![StringColumn::new_with_values(&["a", "", "日本語"])]
         );
     }
 
@@ -282,9 +277,9 @@ mod tests {
         assert_eq!(
             str_chunks(&dir, "name"),
             vec![
-                string_column(&["a", "b"]),
-                string_column(&["c"]),
-                string_column(&["d", "e"]),
+                StringColumn::new_with_values(&["a", "b"]),
+                StringColumn::new_with_values(&["c"]),
+                StringColumn::new_with_values(&["d", "e"]),
             ]
         );
     }
@@ -323,7 +318,7 @@ mod tests {
         assert_eq!(i64_chunks(&dir, "id"), vec![vec![], vec![7]]);
         assert_eq!(
             str_chunks(&dir, "name"),
-            vec![StringColumn::new(), string_column(&["x"])]
+            vec![StringColumn::new(), StringColumn::new_with_values(&["x"])]
         );
     }
 
@@ -340,7 +335,10 @@ mod tests {
         writer.finish().unwrap();
 
         assert_eq!(i64_chunks(&dir, "id"), vec![vec![42]]);
-        assert_eq!(str_chunks(&dir, "name"), vec![string_column(&["tiny"])]);
+        assert_eq!(
+            str_chunks(&dir, "name"),
+            vec![StringColumn::new_with_values(&["tiny"])]
+        );
         assert_eq!(f64_chunks(&dir, "score"), vec![vec![0.5]]);
     }
 
@@ -573,7 +571,10 @@ mod tests {
         writer.finish().unwrap();
 
         assert_eq!(i64_chunks(&dir, "id"), vec![vec![7]]);
-        assert_eq!(str_chunks(&dir, "name"), vec![string_column(&["x"])]);
+        assert_eq!(
+            str_chunks(&dir, "name"),
+            vec![StringColumn::new_with_values(&["x"])]
+        );
         assert_eq!(f64_chunks(&dir, "score"), vec![vec![7.5]]);
         assert_eq!(
             schema_text(&dir),
@@ -592,7 +593,10 @@ mod tests {
         let block = Block::new(
             vec![
                 ("id".to_string(), Column::Int64(vec![1])),
-                ("name".to_string(), Column::String(string_column(&["a"]))),
+                (
+                    "name".to_string(),
+                    Column::String(StringColumn::new_with_values(&["a"])),
+                ),
             ],
             1,
         );
@@ -608,7 +612,10 @@ mod tests {
         let block = Block::new(
             vec![
                 ("id".to_string(), Column::Int64(vec![1])),
-                ("label".to_string(), Column::String(string_column(&["a"]))),
+                (
+                    "label".to_string(),
+                    Column::String(StringColumn::new_with_values(&["a"])),
+                ),
                 ("score".to_string(), Column::Float64(vec![1.0])),
             ],
             1,
@@ -625,7 +632,10 @@ mod tests {
         let block = Block::new(
             vec![
                 ("id".to_string(), Column::Float64(vec![1.0])),
-                ("name".to_string(), Column::String(string_column(&["a"]))),
+                (
+                    "name".to_string(),
+                    Column::String(StringColumn::new_with_values(&["a"])),
+                ),
                 ("score".to_string(), Column::Float64(vec![1.0])),
             ],
             1,
@@ -645,7 +655,10 @@ mod tests {
             vec![
                 ("id".to_string(), Column::Int64(vec![1])),
                 ("score".to_string(), Column::Float64(vec![1.0])),
-                ("name".to_string(), Column::String(string_column(&["a"]))),
+                (
+                    "name".to_string(),
+                    Column::String(StringColumn::new_with_values(&["a"])),
+                ),
             ],
             1,
         );

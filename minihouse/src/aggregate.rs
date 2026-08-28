@@ -52,14 +52,6 @@ mod tests {
     use crate::string_column::StringColumn;
     use crate::value::Value;
 
-    fn string_column(values: &[&str]) -> StringColumn {
-        let mut col = StringColumn::new();
-        for v in values {
-            col.push(v);
-        }
-        col
-    }
-
     #[test]
     fn make_aggregate_count_int64_counts_rows() {
         let mut agg = make_aggregate(AggKind::Count, DataType::Int64);
@@ -77,7 +69,9 @@ mod tests {
     #[test]
     fn make_aggregate_count_string_counts_rows() {
         let mut agg = make_aggregate(AggKind::Count, DataType::String);
-        agg.update(&Column::String(string_column(&["a", "b", "c"])));
+        agg.update(&Column::String(StringColumn::new_with_values(&[
+            "a", "b", "c",
+        ])));
         assert_eq!(agg.result(), Some(Value::Int64(3)));
     }
 
