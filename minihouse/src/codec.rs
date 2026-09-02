@@ -121,14 +121,7 @@ pub(crate) fn read_block(r: &mut impl Read) -> Result<Option<Vec<u8>>, CodecErro
                 )));
             }
 
-            let mut compressed = vec![0u8; c_len];
-            r.read_exact(&mut compressed).map_err(|e| match e.kind() {
-                std::io::ErrorKind::UnexpectedEof => {
-                    CodecError::Corrupt(format!("truncated body: expected {c_len} bytes"))
-                }
-                _ => CodecError::Io(e),
-            })?;
-
+            let compressed = read(c_len, r)?;
             let raw = decompress(&compressed, r_len)
                 .map_err(|e| CodecError::Corrupt(format!("lz4 decompress failed: {e}")))?;
 
@@ -141,17 +134,21 @@ pub(crate) fn read_block(r: &mut impl Read) -> Result<Option<Vec<u8>>, CodecErro
                 )));
             }
 
-            let mut raw = vec![0u8; c_len];
-            r.read_exact(&mut raw).map_err(|e| match e.kind() {
-                std::io::ErrorKind::UnexpectedEof => {
-                    CodecError::Corrupt(format!("truncated body: expected {c_len} bytes"))
-                }
-                _ => CodecError::Io(e),
-            })?;
-
+            let raw = read(c_len, r)?;
             Ok(Some(raw))
         }
     }
+}
+
+fn read(len: usize, r: &mut impl Read) -> Result<Vec<u8>, CodecError> {
+    let mut buf = vec![0u8; len];
+    r.read_exact(&mut buf).map_err(|e| match e.kind() {
+        std::io::ErrorKind::UnexpectedEof => {
+            CodecError::Corrupt(format!("truncated body: expected {len} bytes"))
+        }
+        _ => CodecError::Io(e),
+    })?;
+    Ok(buf)
 }
 
 #[cfg(test)]
