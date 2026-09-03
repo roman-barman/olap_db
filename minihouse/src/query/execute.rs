@@ -64,17 +64,19 @@ fn eval_predicate(col: &Column, op: CmpOp, value: &Value) -> Vec<bool> {
         panic!("Unsupported comparison {op:?} for string values");
     }
 
+    macro_rules! execute_cmp {
+        ($v: expr, $x: expr, $op: expr) => {
+            match $op {
+                CmpOp::Gt => cmp_loop($v, |a| a > $x),
+                CmpOp::Lt => cmp_loop($v, |a| a < $x),
+                CmpOp::Eq => cmp_loop($v, |a| a == $x),
+            }
+        };
+    }
+
     match (col, value) {
-        (Column::Int64(v), Value::Int64(x)) => match op {
-            CmpOp::Gt => cmp_loop(v, |a| a > x),
-            CmpOp::Lt => cmp_loop(v, |a| a < x),
-            CmpOp::Eq => cmp_loop(v, |a| a == x),
-        },
-        (Column::Float64(v), Value::Float64(x)) => match op {
-            CmpOp::Gt => cmp_loop(v, |a| a > x),
-            CmpOp::Lt => cmp_loop(v, |a| a < x),
-            CmpOp::Eq => cmp_loop(v, |a| a == x),
-        },
+        (Column::Int64(v), Value::Int64(x)) => execute_cmp!(v, x, op),
+        (Column::Float64(v), Value::Float64(x)) => execute_cmp!(v, x, op),
         (Column::String(v), Value::String(x)) => match op {
             CmpOp::Eq => {
                 let x_bytes = x.as_bytes();
