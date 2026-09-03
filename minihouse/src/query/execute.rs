@@ -102,40 +102,15 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Schema;
     use crate::aggregate::AggKind;
     use crate::block::Block;
     use crate::codec::Codec;
     use crate::string_column::StringColumn;
+    use crate::test_fixture::{sample_block, sample_schema};
     use std::fs;
     use std::path::PathBuf;
     use tempfile::TempDir;
     // ---- fixtures ------------------------------------------------------
-
-    fn sample_schema() -> Schema {
-        Schema::new(vec![
-            ("id".to_string(), DataType::Int64),
-            ("name".to_string(), DataType::String),
-            ("score".to_string(), DataType::Float64),
-        ])
-        .unwrap()
-    }
-
-    fn sample_block(ids: &[i64], names: &[&str], scores: &[f64]) -> Block {
-        assert_eq!(ids.len(), names.len());
-        assert_eq!(ids.len(), scores.len());
-        Block::new(
-            vec![
-                ("id".to_string(), Column::Int64(ids.to_vec())),
-                (
-                    "name".to_string(),
-                    Column::String(StringColumn::new_with_values(names)),
-                ),
-                ("score".to_string(), Column::Float64(scores.to_vec())),
-            ],
-            ids.len(),
-        )
-    }
 
     /// A table holding one part per block, so the scan walks several
     /// `PartReader`s. The `TempDir` must outlive the `Table` — bind it, don't

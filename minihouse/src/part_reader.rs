@@ -220,6 +220,7 @@ mod tests {
     use crate::column_io::{write_f64_chunk, write_i64_chunk, write_str_chunk};
     use crate::part_writer::PartWriter;
     use crate::string_column::StringColumn;
+    use crate::test_fixture::sample_schema;
     use crate::{Block, Column};
     use std::fs::OpenOptions;
     use std::io::Write;
@@ -250,17 +251,6 @@ mod tests {
         let mut name = dir.file_name().unwrap().to_os_string();
         name.push(".tmp");
         dir.with_file_name(name)
-    }
-
-    /// One column per `DataType`, so every fixture exercises both the single-file
-    /// and the paired-file branch.
-    fn sample_schema() -> Schema {
-        Schema::new(vec![
-            col("id", DataType::Int64),
-            col("name", DataType::String),
-            col("score", DataType::Float64),
-        ])
-        .unwrap()
     }
 
     fn sample_block(rows: usize) -> Block {

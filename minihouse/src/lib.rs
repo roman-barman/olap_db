@@ -14,6 +14,8 @@ mod schema;
 mod storage_error;
 mod string_column;
 mod table;
+#[cfg(test)]
+mod test_fixture;
 mod value;
 
 pub use block::Block;
