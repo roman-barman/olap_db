@@ -6,9 +6,9 @@ mod min_i64;
 mod sum_f64;
 mod sum_i64;
 
-use crate::DataType;
 use crate::column::Column;
-use crate::value::Value;
+use crate::core::DataType;
+use crate::core::Value;
 
 pub(crate) trait Aggregate {
     fn update(&mut self, col: &Column);
@@ -49,8 +49,8 @@ pub(crate) fn make_aggregate(kind: AggKind, dt: DataType) -> Box<dyn Aggregate> 
 mod tests {
     use super::*;
     use crate::column::Column;
-    use crate::string_column::StringColumn;
-    use crate::value::Value;
+    use crate::core::StringColumn;
+    use crate::core::Value;
 
     #[test]
     fn make_aggregate_count_int64_counts_rows() {

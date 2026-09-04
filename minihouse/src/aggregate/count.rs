@@ -1,6 +1,6 @@
 use crate::aggregate::Aggregate;
 use crate::column::Column;
-use crate::value::Value;
+use crate::core::Value;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(super) struct Count {
@@ -22,8 +22,7 @@ impl Aggregate for Count {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::DataType;
-    use crate::string_column::StringColumn;
+    use crate::core::{DataType, StringColumn};
 
     #[test]
     fn count_default_result_is_zero() {

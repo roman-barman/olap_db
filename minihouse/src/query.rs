@@ -1,8 +1,8 @@
 mod execute;
 
 use crate::aggregate::AggKind;
+use crate::core::Value;
 pub use crate::query::execute::execute;
-use crate::value::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq, Copy)]
 pub enum CmpOp {

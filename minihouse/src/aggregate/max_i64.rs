@@ -1,6 +1,6 @@
 use crate::aggregate::Aggregate;
 use crate::column::Column;
-use crate::value::Value;
+use crate::core::Value;
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct MaxI64 {
@@ -30,7 +30,7 @@ impl Aggregate for MaxI64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::DataType;
+    use crate::core::DataType;
 
     #[test]
     fn max_i64_default_result_is_none() {

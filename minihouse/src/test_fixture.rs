@@ -1,5 +1,5 @@
-use crate::string_column::StringColumn;
-use crate::{Block, Column, DataType, Schema};
+use crate::core::{DataType, StringColumn};
+use crate::{Block, Column, Schema};
 use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;

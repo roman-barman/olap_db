@@ -1,4 +1,4 @@
-use crate::DataType;
+use crate::core::DataType;
 use std::ops::Index;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1,10 +1,10 @@
-use crate::DataType;
 use crate::aggregate::make_aggregate;
 use crate::column::Column;
+use crate::core::DataType;
+use crate::core::Value;
 use crate::query::{CmpOp, SimpleQuery};
 use crate::storage_error::StorageError;
 use crate::table::Table;
-use crate::value::Value;
 
 pub fn execute(table: &Table, q: &SimpleQuery) -> Result<Option<Value>, StorageError> {
     let agg_column_dt = table
@@ -105,7 +105,7 @@ mod tests {
     use crate::aggregate::AggKind;
     use crate::block::Block;
     use crate::codec::Codec;
-    use crate::string_column::StringColumn;
+    use crate::core::StringColumn;
     use crate::test_fixture::{sample_block, sample_schema};
     use std::fs;
     use std::path::PathBuf;

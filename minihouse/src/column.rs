@@ -1,5 +1,4 @@
-use crate::DataType;
-use crate::string_column::StringColumn;
+use crate::core::{DataType, StringColumn};
 
 /// Heuristics for pre-allocating a string column's data buffer when
 /// the exact byte count is unknown (Column::with_capacity only knows rows).

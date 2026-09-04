@@ -75,7 +75,7 @@ impl Block {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::string_column::StringColumn;
+    use crate::core::StringColumn;
 
     fn sample_columns() -> Vec<(String, Column)> {
         vec![

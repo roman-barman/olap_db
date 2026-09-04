@@ -1,7 +1,8 @@
 use crate::column_io::{read_f64_chunk, read_i64_chunk, read_str_chunk};
+use crate::core::DataType;
 use crate::schema::Schema;
 use crate::storage_error::StorageError;
-use crate::{Block, Column, DataType};
+use crate::{Block, Column};
 use std::fs;
 use std::fs::File;
 use std::io::{BufReader, ErrorKind};
@@ -218,8 +219,8 @@ mod tests {
     use super::*;
     use crate::codec::{Codec, write_block};
     use crate::column_io::{write_f64_chunk, write_i64_chunk, write_str_chunk};
+    use crate::core::StringColumn;
     use crate::part_writer::PartWriter;
-    use crate::string_column::StringColumn;
     use crate::test_fixture::{column_names, part_dir, sample_schema, staging_of};
     use crate::{Block, Column};
     use std::fs::OpenOptions;

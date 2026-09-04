@@ -1,6 +1,6 @@
 use crate::aggregate::Aggregate;
 use crate::column::Column;
-use crate::value::Value;
+use crate::core::Value;
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct SumI64 {
@@ -28,7 +28,7 @@ impl Aggregate for SumI64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::DataType;
+    use crate::core::DataType;
 
     #[test]
     fn sum_i64_default_result_is_zero() {
