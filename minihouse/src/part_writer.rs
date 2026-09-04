@@ -135,7 +135,7 @@ mod tests {
     use super::*;
     use crate::column_io::{read_f64_chunk, read_i64_chunk, read_str_chunk};
     use crate::string_column::StringColumn;
-    use crate::test_fixture::{part_dir, sample_block, sample_schema, staging_of};
+    use crate::test_fixture::{entries, part_dir, sample_block, sample_schema, staging_of};
     use std::fs;
     use std::io::BufReader;
     use std::path::Path;
@@ -176,15 +176,6 @@ mod tests {
 
     fn schema_text(dir: &Path) -> String {
         fs::read_to_string(dir.join("schema.txt")).unwrap()
-    }
-
-    fn entries(dir: &Path) -> Vec<String> {
-        let mut names: Vec<String> = fs::read_dir(dir)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        names.sort();
-        names
     }
 
     // ---- round trip ----------------------------------------------------

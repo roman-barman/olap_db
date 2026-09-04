@@ -1,5 +1,6 @@
 use crate::string_column::StringColumn;
 use crate::{Block, Column, DataType, Schema};
+use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
@@ -47,4 +48,14 @@ pub(crate) fn staging_of(dir: &Path) -> PathBuf {
 /// all a single assertion on this.
 pub(crate) fn column_names(block: &Block) -> Vec<&str> {
     block.columns().iter().map(|(n, _)| n.as_str()).collect()
+}
+
+/// Sorted directory listing, so tests can pin exactly which files exist.
+pub(crate) fn entries(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
 }

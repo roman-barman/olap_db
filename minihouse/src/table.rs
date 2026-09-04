@@ -276,7 +276,7 @@ mod tests {
     use super::*;
     use crate::column::Column;
     use crate::string_column::StringColumn;
-    use crate::test_fixture::{column_names, sample_block, sample_schema};
+    use crate::test_fixture::{column_names, entries, sample_block, sample_schema};
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use tempfile::TempDir;
     // ---- fixtures ------------------------------------------------------
@@ -354,16 +354,6 @@ mod tests {
     }
 
     // ---- readers -------------------------------------------------------
-
-    /// Sorted directory listing, so tests can pin exactly which files exist.
-    fn entries(dir: &Path) -> Vec<String> {
-        let mut names: Vec<String> = fs::read_dir(dir)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        names.sort();
-        names
-    }
 
     fn schema_text(dir: &Path) -> String {
         fs::read_to_string(dir.join("schema.txt")).unwrap()
