@@ -276,7 +276,7 @@ mod tests {
     use super::*;
     use crate::column::Column;
     use crate::string_column::StringColumn;
-    use crate::test_fixture::{sample_block, sample_schema};
+    use crate::test_fixture::{column_names, sample_block, sample_schema};
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use tempfile::TempDir;
     // ---- fixtures ------------------------------------------------------
@@ -367,10 +367,6 @@ mod tests {
 
     fn schema_text(dir: &Path) -> String {
         fs::read_to_string(dir.join("schema.txt")).unwrap()
-    }
-
-    fn column_names(block: &Block) -> Vec<&str> {
-        block.columns().iter().map(|(n, _)| n.as_str()).collect()
     }
 
     fn row_counts(blocks: &[Block]) -> Vec<usize> {

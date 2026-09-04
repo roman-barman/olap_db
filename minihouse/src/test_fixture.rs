@@ -1,5 +1,7 @@
 use crate::string_column::StringColumn;
 use crate::{Block, Column, DataType, Schema};
+use std::path::{Path, PathBuf};
+use tempfile::TempDir;
 
 pub(crate) fn sample_schema() -> Schema {
     Schema::new(vec![
@@ -24,4 +26,25 @@ pub(crate) fn sample_block(ids: &[i64], names: &[&str], scores: &[f64]) -> Block
         ],
         ids.len(),
     )
+}
+
+/// A temp root plus the part directory inside it. The root must stay alive
+/// for the whole test — bind it, don't discard it.
+pub(crate) fn part_dir() -> (TempDir, PathBuf) {
+    let root = TempDir::new().unwrap();
+    let dir = root.path().join("part_0");
+    (root, dir)
+}
+
+/// The staging directory `PartWriter` writes into before `finish`.
+pub(crate) fn staging_of(dir: &Path) -> PathBuf {
+    let mut name = dir.file_name().unwrap().to_os_string();
+    name.push(".tmp");
+    dir.with_file_name(name)
+}
+
+/// The block's columns in the order it holds them — the projection tests are
+/// all a single assertion on this.
+pub(crate) fn column_names(block: &Block) -> Vec<&str> {
+    block.columns().iter().map(|(n, _)| n.as_str()).collect()
 }

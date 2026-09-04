@@ -135,26 +135,11 @@ mod tests {
     use super::*;
     use crate::column_io::{read_f64_chunk, read_i64_chunk, read_str_chunk};
     use crate::string_column::StringColumn;
-    use crate::test_fixture::{sample_block, sample_schema};
+    use crate::test_fixture::{part_dir, sample_block, sample_schema, staging_of};
     use std::fs;
     use std::io::BufReader;
     use std::path::Path;
     use tempfile::TempDir;
-
-    /// A temp root plus the part directory inside it that the writer targets.
-    /// The root must stay alive for the whole test — bind it, don't discard it.
-    fn part_dir() -> (TempDir, PathBuf) {
-        let root = TempDir::new().unwrap();
-        let dir = root.path().join("part_0");
-        (root, dir)
-    }
-
-    /// The staging directory `PartWriter` writes into before `finish`.
-    fn staging_of(dir: &Path) -> PathBuf {
-        let mut name = dir.file_name().unwrap().to_os_string();
-        name.push(".tmp");
-        dir.with_file_name(name)
-    }
 
     fn open(dir: &Path, file: &str) -> BufReader<File> {
         BufReader::new(File::open(dir.join(file)).unwrap())

@@ -220,7 +220,7 @@ mod tests {
     use crate::column_io::{write_f64_chunk, write_i64_chunk, write_str_chunk};
     use crate::part_writer::PartWriter;
     use crate::string_column::StringColumn;
-    use crate::test_fixture::sample_schema;
+    use crate::test_fixture::{column_names, part_dir, sample_schema, staging_of};
     use crate::{Block, Column};
     use std::fs::OpenOptions;
     use std::io::Write;
@@ -237,21 +237,6 @@ mod tests {
     }
 
     // ---- `open` fixtures -----------------------------------------------
-
-    /// A temp root plus the part directory inside it. The root must stay alive
-    /// for the whole test — bind it, don't discard it.
-    fn part_dir() -> (TempDir, PathBuf) {
-        let root = TempDir::new().unwrap();
-        let dir = root.path().join("part_0");
-        (root, dir)
-    }
-
-    /// The staging directory `PartWriter` writes into before `finish`.
-    fn staging_of(dir: &Path) -> PathBuf {
-        let mut name = dir.file_name().unwrap().to_os_string();
-        name.push(".tmp");
-        dir.with_file_name(name)
-    }
 
     fn sample_block(rows: usize) -> Block {
         let mut names = StringColumn::new();
@@ -1146,12 +1131,6 @@ mod tests {
 
     fn row_counts(blocks: &[Block]) -> Vec<usize> {
         blocks.iter().map(|b| b.num_rows()).collect()
-    }
-
-    /// The block's columns in the order it holds them — the projection tests are
-    /// all a single assertion on this.
-    fn column_names(block: &Block) -> Vec<&str> {
-        block.columns().iter().map(|(n, _)| n.as_str()).collect()
     }
 
     /// `StringColumn` has no iterator, so values come out by index.
