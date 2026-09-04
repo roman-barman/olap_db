@@ -1,5 +1,4 @@
 use crate::column::Column;
-use crate::helpers;
 
 #[derive(Debug)]
 pub struct Block {
@@ -9,7 +8,13 @@ pub struct Block {
 
 impl Block {
     pub fn new(columns: Vec<(String, Column)>, num_rows: usize) -> Self {
-        helpers::assert_unique_names(&columns);
+        for i in 1..columns.len() {
+            let (name, _) = &columns[i];
+            assert!(
+                !columns[..i].iter().any(|(n, _)| n == name),
+                "duplicate column name: {name}"
+            );
+        }
 
         for (name, column) in &columns {
             assert_eq!(

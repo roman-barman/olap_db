@@ -6,7 +6,6 @@ mod block;
 mod codec;
 mod column;
 mod column_io;
-mod helpers;
 mod part_reader;
 mod part_writer;
 pub mod query;
