@@ -1,4 +1,4 @@
-use crate::column::Column;
+use crate::core::Column;
 
 #[derive(Debug)]
 pub struct Block {

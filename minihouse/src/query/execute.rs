@@ -1,7 +1,5 @@
 use crate::aggregate::make_aggregate;
-use crate::column::Column;
-use crate::core::DataType;
-use crate::core::Value;
+use crate::core::{Column, DataType, Value};
 use crate::query::{CmpOp, SimpleQuery};
 use crate::storage_error::StorageError;
 use crate::table::Table;
@@ -102,8 +100,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Block;
     use crate::aggregate::AggKind;
-    use crate::block::Block;
     use crate::codec::Codec;
     use crate::core::StringColumn;
     use crate::test_fixture::{sample_block, sample_schema};

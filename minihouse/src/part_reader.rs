@@ -1,8 +1,7 @@
 use crate::column_io::{read_f64_chunk, read_i64_chunk, read_str_chunk};
 use crate::core::DataType;
-use crate::schema::Schema;
 use crate::storage_error::StorageError;
-use crate::{Block, Column};
+use crate::{Block, Column, Schema};
 use std::fs;
 use std::fs::File;
 use std::io::{BufReader, ErrorKind};

@@ -1,10 +1,9 @@
-use crate::block::Block;
 use crate::codec::Codec;
 use crate::core::DataType;
 use crate::part_reader::PartReader;
 use crate::part_writer::PartWriter;
-use crate::schema::Schema;
 use crate::storage_error::StorageError;
+use crate::{Block, Schema};
 use std::fs;
 use std::fs::File;
 use std::io::{BufWriter, ErrorKind, Write};
@@ -274,7 +273,7 @@ fn list_parts(dir: &Path) -> Result<Vec<(usize, PathBuf)>, StorageError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::column::Column;
+    use crate::core::Column;
     use crate::core::StringColumn;
     use crate::test_fixture::{column_names, entries, sample_block, sample_schema};
     use std::panic::{AssertUnwindSafe, catch_unwind};

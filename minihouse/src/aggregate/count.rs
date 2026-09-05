@@ -1,6 +1,5 @@
 use crate::aggregate::Aggregate;
-use crate::column::Column;
-use crate::core::Value;
+use crate::core::{Column, Value};
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(super) struct Count {

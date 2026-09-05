@@ -1,8 +1,7 @@
 use crate::codec::{Codec, CodecError};
 use crate::column_io::{write_f64_chunk, write_i64_chunk, write_str_chunk};
 use crate::core::DataType;
-use crate::schema::Schema;
-use crate::{Block, Column};
+use crate::{Block, Column, Schema};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
