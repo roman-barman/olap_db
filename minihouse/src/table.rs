@@ -1,8 +1,5 @@
-use crate::codec::Codec;
 use crate::core::DataType;
-use crate::part_reader::PartReader;
-use crate::part_writer::PartWriter;
-use crate::storage_error::StorageError;
+use crate::storage::{Codec, PartReader, PartWriter, StorageError};
 use crate::{Block, Schema};
 use std::fs;
 use std::fs::File;

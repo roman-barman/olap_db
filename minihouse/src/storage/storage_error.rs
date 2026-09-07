@@ -1,4 +1,4 @@
-use crate::codec::CodecError;
+use crate::storage::CodecError;
 use std::io;
 use std::path::PathBuf;
 

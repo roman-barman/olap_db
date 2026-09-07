@@ -1,5 +1,5 @@
-use crate::codec::{Codec, CodecError, MAX_BLOCK_SIZE, read_block, write_block};
 use crate::core::StringColumn;
+use crate::storage::{Codec, CodecError, MAX_BLOCK_SIZE, read_block, write_block};
 use std::io::{Read, Write};
 
 pub(crate) fn write_i64_chunk(

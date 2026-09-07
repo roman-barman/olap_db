@@ -1,6 +1,5 @@
-use crate::codec::{Codec, CodecError};
-use crate::column_io::{write_f64_chunk, write_i64_chunk, write_str_chunk};
 use crate::core::DataType;
+use crate::storage::{Codec, CodecError, write_f64_chunk, write_i64_chunk, write_str_chunk};
 use crate::{Block, Column, Schema};
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -133,8 +132,8 @@ enum ColumnFiles {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::column_io::{read_f64_chunk, read_i64_chunk, read_str_chunk};
     use crate::core::StringColumn;
+    use crate::storage::{read_f64_chunk, read_i64_chunk, read_str_chunk};
     use crate::test_fixture::{entries, part_dir, sample_block, sample_schema, staging_of};
     use std::fs;
     use std::io::BufReader;

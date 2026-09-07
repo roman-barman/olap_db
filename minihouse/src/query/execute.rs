@@ -1,7 +1,7 @@
 use crate::aggregate::make_aggregate;
 use crate::core::{Column, DataType, Value};
 use crate::query::{CmpOp, SimpleQuery};
-use crate::storage_error::StorageError;
+use crate::storage::StorageError;
 use crate::table::Table;
 
 pub fn execute(table: &Table, q: &SimpleQuery) -> Result<Option<Value>, StorageError> {
@@ -102,8 +102,8 @@ mod tests {
     use super::*;
     use crate::Block;
     use crate::aggregate::AggKind;
-    use crate::codec::Codec;
     use crate::core::StringColumn;
+    use crate::storage::Codec;
     use crate::test_fixture::{sample_block, sample_schema};
     use std::fs;
     use std::path::PathBuf;
