@@ -9,5 +9,5 @@ pub use block::Block;
 pub use column::Column;
 pub use data_type::DataType;
 pub use schema::Schema;
-pub use string_column::StringColumn;
+pub(crate) use string_column::StringColumn;
 pub use value::Value;
