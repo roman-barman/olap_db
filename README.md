@@ -73,7 +73,7 @@ agree between the two, then benchmarks median wall-clock time (7 runs) at three 
 selectivities (~1%, ~50%, ~99%), printing a columnar-vs-row speed ratio for each. This exists to
 empirically demonstrate the performance advantage of columnar scans over row-oriented ones.
 
-See [`benchmarks/src/column_vs_row.rs`](benchmarks/src/column_vs_row.rs) for the benchmark logic.
+See [`benchmarks/src/bench_iter_2.rs`](benchmarks/src/bench_iter_2.rs) for the benchmark logic.
 
 ## Development
 

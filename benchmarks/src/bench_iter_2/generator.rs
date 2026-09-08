@@ -1,6 +1,6 @@
-use crate::column_vs_row::row_table::{Row, RowTable};
+use crate::bench_iter_2::row_table::{Row, RowTable};
+use minihouse::Block;
 use minihouse::DataType;
-use minihouse::{Block, Codec};
 use minihouse::{Column, Schema};
 use rand::prelude::StdRng;
 use rand::{RngExt, SeedableRng};

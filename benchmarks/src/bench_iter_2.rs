@@ -1,11 +1,11 @@
 use crate::bench;
-use crate::column_vs_row::generator::{generate, schema};
-use crate::column_vs_row::row_table::{
+use crate::bench_iter_2::generator::{generate, schema};
+use crate::bench_iter_2::row_table::{
     RowTable, count_where_ts_gt, count_where_url_eq, sum_dur, sum_dur_where_ts_gt,
 };
 use minihouse::aggregate::AggKind;
 use minihouse::query::{CmpOp, SimpleQuery};
-use minihouse::{Codec, DataType, Table, Value};
+use minihouse::{Codec, Table, Value};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
@@ -45,11 +45,6 @@ pub(super) fn prepare() {
 }
 
 pub(super) fn execute() {
-    let schema = schema();
-    let columns = schema
-        .iter()
-        .map(|(name, _)| name.as_str())
-        .collect::<Vec<_>>();
     let (_, row_table) = generate(10_000_000, 8192);
     //let col_table = Table::open(PathBuf::from("benchmarks/data/column_vs_row/none")).expect("can not open table");
     let col_table = Table::open(PathBuf::from("benchmarks/data/column_vs_row/lz4"))
@@ -109,7 +104,7 @@ fn without_filter_bench(col_table: &Table, row_table: &RowTable) {
         col_table,
         row_table,
         &sum_dur_query(),
-        |table| sum_dur(table),
+        sum_dur,
     );
     println!();
     println!("--------------------");

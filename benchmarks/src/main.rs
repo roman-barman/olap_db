@@ -1,10 +1,10 @@
 use std::time::{Duration, Instant};
 
-mod column_vs_row;
+mod bench_iter_2;
 
 fn main() {
-    column_vs_row::prepare();
-    column_vs_row::execute();
+    bench_iter_2::prepare();
+    bench_iter_2::execute();
 }
 
 fn bench<F: Fn() -> R, R>(name: &str, runs: usize, f: F) -> Duration {
