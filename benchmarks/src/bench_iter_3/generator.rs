@@ -1,4 +1,4 @@
-use crate::bench_iter_2::row_table::{Row, RowTable};
+use crate::bench_iter_3::row_table::{Row, RowTable};
 use minihouse::Block;
 use minihouse::DataType;
 use minihouse::{Column, Schema};

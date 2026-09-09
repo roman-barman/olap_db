@@ -1,10 +1,10 @@
 use std::time::{Duration, Instant};
 
-mod bench_iter_2;
+mod bench_iter_3;
 
 fn main() {
-    bench_iter_2::prepare();
-    bench_iter_2::execute();
+    bench_iter_3::prepare();
+    bench_iter_3::execute();
 }
 
 fn bench<F: Fn() -> R, R>(name: &str, runs: usize, f: F) -> Duration {

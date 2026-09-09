@@ -1,13 +1,11 @@
 use crate::bench;
-use crate::bench_iter_2::generator::{generate, schema};
-use crate::bench_iter_2::row_table::{
+use crate::bench_iter_3::generator::{generate, schema};
+use crate::bench_iter_3::row_table::{
     RowTable, count_where_ts_gt, count_where_url_eq, sum_dur, sum_dur_where_ts_gt,
 };
 use minihouse::aggregate::AggKind;
 use minihouse::query::{CmpOp, SimpleQuery};
 use minihouse::{Codec, Table, Value};
-use std::fs::File;
-use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -15,29 +13,20 @@ mod generator;
 mod row_table;
 
 pub(super) fn prepare() {
-    let (blocks, row_table) = generate(10_000_000, 8192);
+    let (blocks, _) = generate(10_000_000, 8192);
 
-    let mut w =
-        BufWriter::new(File::create("benchmarks/data/dump.csv").expect("can not create csv file"));
-    for r in &row_table.rows {
-        writeln!(w, "{},{},{},{}", r.id, r.ts, r.url, r.dur).expect("can not write to csv file");
-    }
-    w.flush().expect("can not flush csv file");
-
-    for (dir, codec) in [
-        (
-            PathBuf::from("benchmarks/data/column_vs_row/none"),
-            Codec::None,
-        ),
-        (
-            PathBuf::from("benchmarks/data/column_vs_row/lz4"),
-            Codec::Lz4,
-        ),
-    ] {
+    for (dir, codec) in [(
+        PathBuf::from("benchmarks/data/iter_3/none_fragmented"),
+        Codec::None,
+    )] {
         let time = Instant::now();
 
         let mut t = Table::create(dir, schema(), codec).expect("can not create table");
-        t.insert(&blocks).expect("can not insert blocks to table");
+
+        for block in &blocks {
+            t.insert(std::slice::from_ref(block))
+                .expect("can not insert blocks to table");
+        }
 
         let duration = time.elapsed();
         println!("{}: {:?}", codec.as_str(), duration);
@@ -46,14 +35,13 @@ pub(super) fn prepare() {
 
 pub(super) fn execute() {
     let (_, row_table) = generate(10_000_000, 8192);
-    //let col_table = Table::open(PathBuf::from("benchmarks/data/column_vs_row/none")).expect("can not open table");
-    let col_table = Table::open(PathBuf::from("benchmarks/data/column_vs_row/lz4"))
+    let col_table = Table::open(PathBuf::from("benchmarks/data/iter_3/none_fragmented"))
         .expect("can not open table");
 
-    sum_bench(&col_table, &row_table);
+    //sum_bench(&col_table, &row_table);
     without_filter_bench(&col_table, &row_table);
-    count_bench(&col_table, &row_table);
-    count_string_bench(&col_table, &row_table)
+    //count_bench(&col_table, &row_table);
+    //count_string_bench(&col_table, &row_table)
 }
 
 fn sum_bench(col_table: &Table, row_table: &RowTable) {
