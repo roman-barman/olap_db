@@ -1,8 +1,7 @@
 use crate::aggregate::make_aggregate;
 use crate::core::{Column, DataType, Value};
 use crate::query::{CmpOp, SimpleQuery};
-use crate::storage::StorageError;
-use crate::table::Table;
+use crate::storage::{StorageError, Table};
 
 pub fn execute(table: &Table, q: &SimpleQuery) -> Result<Option<Value>, StorageError> {
     let agg_column_dt = table

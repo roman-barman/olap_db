@@ -3,6 +3,7 @@ mod column_io;
 mod part_reader;
 mod part_writer;
 mod storage_error;
+mod table;
 
 pub use codec::Codec;
 pub(crate) use codec::CodecError;
@@ -14,3 +15,4 @@ pub(crate) use column_io::{
 pub(crate) use part_reader::PartReader;
 pub(crate) use part_writer::PartWriter;
 pub(crate) use storage_error::StorageError;
+pub use table::Table;
