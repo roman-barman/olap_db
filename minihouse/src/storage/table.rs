@@ -11,10 +11,29 @@ pub struct Table {
     dir: PathBuf,
     next_part_id: usize,
     codec: Codec,
+    sort_key: Option<String>,
 }
 
 impl Table {
-    pub fn create(dir: PathBuf, schema: Schema, codec: Codec) -> Result<Self, StorageError> {
+    pub fn create(
+        dir: PathBuf,
+        schema: Schema,
+        codec: Codec,
+        sort_key: Option<&str>,
+    ) -> Result<Self, StorageError> {
+        if let Some(sort_key) = sort_key {
+            match schema.iter().find(|(name, _)| name == sort_key) {
+                None => return Err(StorageError::ColumnNotFound(sort_key.to_string())),
+                Some((_, DataType::Int64)) => {}
+                Some((_, dt)) => {
+                    return Err(StorageError::InvalidSortKey {
+                        key: sort_key.to_string(),
+                        got: *dt,
+                    });
+                }
+            }
+        };
+
         if dir.exists() {
             return Err(StorageError::AlreadyExists(dir));
         }
@@ -24,6 +43,9 @@ impl Table {
         let mut schema_writer = BufWriter::new(File::create(schema_file)?);
         schema_writer.write_all(b"version=1\n")?;
         writeln!(schema_writer, "codec={}", codec.as_str())?;
+        if let Some(sort_key) = sort_key {
+            writeln!(schema_writer, "sort_key={}", sort_key)?;
+        }
         for (name, data_type) in schema.iter() {
             writeln!(schema_writer, "column={}:{}", name, data_type.as_str())?;
         }
@@ -34,6 +56,7 @@ impl Table {
             dir,
             next_part_id: 0,
             codec,
+            sort_key: sort_key.map(str::to_string),
         })
     }
 
@@ -50,7 +73,7 @@ impl Table {
             Err(err) => return Err(err.into()),
         };
 
-        let (schema, codec) = parse_schema(&text)?;
+        let (schema, codec, sort_key) = parse_schema(&text)?;
         let parts = list_parts(&dir)?;
         let next_part_id = parts.last().map(|(id, _)| id + 1).unwrap_or(0);
 
@@ -59,6 +82,7 @@ impl Table {
             dir,
             next_part_id,
             codec,
+            sort_key,
         })
     }
 
@@ -178,7 +202,7 @@ fn part_dir_name(id: usize) -> String {
     format!("part_{id:04}")
 }
 
-fn parse_schema(text: &str) -> Result<(Schema, Codec), StorageError> {
+fn parse_schema(text: &str) -> Result<(Schema, Codec, Option<String>), StorageError> {
     if text.is_empty() {
         return Err(StorageError::Corrupt("empty schema".into()));
     }
@@ -204,8 +228,21 @@ fn parse_schema(text: &str) -> Result<(Schema, Codec), StorageError> {
         .parse::<Codec>()
         .map_err(|e| StorageError::Corrupt(format!("line 2: {e}")))?;
 
+    let mut lines = lines.enumerate().peekable();
+
+    let sort_key = lines
+        .peek()
+        .and_then(|(_, l)| l.strip_prefix("sort_key=").map(|s| s.trim()));
+
+    if let Some("") = sort_key {
+        return Err(StorageError::Corrupt("sort_key line is empty".into()));
+    }
+
+    if sort_key.is_some() {
+        lines.next();
+    }
+
     let schema = lines
-        .enumerate()
         .map(|(i, l)| {
             let line_no = i + 3;
             l.strip_prefix("column=")
@@ -234,8 +271,23 @@ fn parse_schema(text: &str) -> Result<(Schema, Codec), StorageError> {
         .collect::<Result<Vec<(String, DataType)>, StorageError>>()?;
 
     let schema = Schema::new(schema).map_err(|e| StorageError::Corrupt(e.to_string()))?;
+    if let Some(sort_key) = sort_key {
+        match schema.iter().find(|(name, _)| name == sort_key) {
+            None => {
+                return Err(StorageError::Corrupt(format!(
+                    "sort key column '{sort_key}' does not exist"
+                )));
+            }
+            Some((_, DataType::Int64)) => {}
+            Some((_, dt)) => {
+                return Err(StorageError::Corrupt(format!(
+                    "sort key '{sort_key}' must be Int64, got {dt:?}"
+                )));
+            }
+        }
+    };
 
-    Ok((schema, codec))
+    Ok((schema, codec, sort_key.map(str::to_string)))
 }
 
 fn list_parts(dir: &Path) -> Result<Vec<(usize, PathBuf)>, StorageError> {
@@ -293,7 +345,7 @@ mod tests {
 
     fn created(schema: Schema) -> (TempDir, PathBuf, Table) {
         let (root, dir) = table_dir();
-        let table = Table::create(dir.clone(), schema, Codec::Lz4).unwrap();
+        let table = Table::create(dir.clone(), schema, Codec::Lz4, None).unwrap();
         (root, dir, table)
     }
 
@@ -314,8 +366,8 @@ mod tests {
 
     /// `Table` has no `Debug`, so `unwrap_err` is unavailable — same shape as
     /// `part_reader.rs::open_error`.
-    fn create_error(dir: PathBuf, schema: Schema) -> StorageError {
-        match Table::create(dir.clone(), schema, Codec::Lz4) {
+    fn create_error(dir: PathBuf, schema: Schema, sort_key: Option<&str>) -> StorageError {
+        match Table::create(dir.clone(), schema, Codec::Lz4, sort_key) {
             Ok(_) => panic!("expected creating {dir:?} to fail"),
             Err(e) => e,
         }
@@ -427,7 +479,7 @@ mod tests {
         let root = TempDir::new().unwrap();
         let dir = root.path().join("nested/deeper/tbl");
 
-        let table = Table::create(dir.clone(), sample_schema(), Codec::Lz4).unwrap();
+        let table = Table::create(dir.clone(), sample_schema(), Codec::Lz4, None).unwrap();
 
         assert!(dir.join("schema.txt").is_file());
         assert_eq!(*table.schema(), sample_schema());
@@ -463,7 +515,7 @@ mod tests {
         let (_root, dir) = table_dir();
         fs::create_dir_all(&dir).unwrap();
 
-        let e = create_error(dir.clone(), sample_schema());
+        let e = create_error(dir.clone(), sample_schema(), None);
 
         assert!(
             matches!(e, StorageError::AlreadyExists(ref p) if *p == dir),
@@ -480,7 +532,7 @@ mod tests {
         let (_root, dir) = table_dir();
         fs::write(&dir, b"not a table").unwrap();
 
-        let e = create_error(dir.clone(), sample_schema());
+        let e = create_error(dir.clone(), sample_schema(), None);
 
         assert!(matches!(e, StorageError::AlreadyExists(_)), "{e:?}");
         assert_eq!(fs::read(&dir).unwrap(), b"not a table");
@@ -618,7 +670,7 @@ mod tests {
     fn create_records_the_codec_on_line_two_of_the_schema_file() {
         for (codec, line) in [(Codec::None, "codec=none"), (Codec::Lz4, "codec=lz4")] {
             let (_root, dir) = table_dir();
-            Table::create(dir.clone(), sample_schema(), codec).unwrap();
+            Table::create(dir.clone(), sample_schema(), codec, None).unwrap();
 
             assert_eq!(schema_text(&dir).lines().nth(1), Some(line), "{codec:?}");
             Table::open(dir).unwrap();
@@ -655,7 +707,7 @@ mod tests {
     fn a_block_round_trips_under_either_codec() {
         for codec in [Codec::None, Codec::Lz4] {
             let (_root, dir) = table_dir();
-            let mut table = Table::create(dir, sample_schema(), codec).unwrap();
+            let mut table = Table::create(dir, sample_schema(), codec, None).unwrap();
 
             table
                 .insert(&[sample_block(&[1, 2, 3], &["a", "b", "c"], &[1.5, 2.5, 3.5])])
@@ -1182,6 +1234,174 @@ mod tests {
         table.insert(&[sample_block(&[1], &["a"], &[1.0])]).unwrap();
 
         let _ = scan_all(&table, &["id", "id"]);
+    }
+
+    // ---- sort key ------------------------------------------------------
+
+    fn created_with_sort_key(sort_key: &str) -> (TempDir, PathBuf, Table) {
+        let (root, dir) = table_dir();
+        let table =
+            Table::create(dir.clone(), sample_schema(), Codec::Lz4, Some(sort_key)).unwrap();
+        (root, dir, table)
+    }
+
+    /// The `sort_key=` line is optional and sits between `codec=` and the
+    /// columns — absent entirely when no key is given (see
+    /// `create_writes_the_schema_file_verbatim`).
+    #[test]
+    fn create_writes_the_sort_key_on_line_three_of_the_schema_file() {
+        let (_root, dir, table) = created_with_sort_key("id");
+
+        assert_eq!(
+            schema_text(&dir),
+            "version=1\ncodec=lz4\nsort_key=id\ncolumn=id:Int64\ncolumn=name:String\ncolumn=score:Float64\n"
+        );
+        assert_eq!(table.sort_key.as_deref(), Some("id"));
+    }
+
+    #[test]
+    fn create_without_a_sort_key_records_none() {
+        let (_root, _dir, table) = sample_table();
+
+        assert_eq!(table.sort_key, None);
+    }
+
+    #[test]
+    fn create_rejects_a_sort_key_naming_an_unknown_column() {
+        let (_root, dir) = table_dir();
+
+        let e = create_error(dir, sample_schema(), Some("nope"));
+
+        assert!(
+            matches!(e, StorageError::ColumnNotFound(ref n) if n == "nope"),
+            "{e:?}"
+        );
+        assert_eq!(e.to_string(), "column 'nope' not found");
+    }
+
+    #[test]
+    fn create_rejects_a_non_int64_sort_key() {
+        for (key, dt) in [("name", DataType::String), ("score", DataType::Float64)] {
+            let (_root, dir) = table_dir();
+
+            let e = create_error(dir, sample_schema(), Some(key));
+
+            assert!(
+                matches!(e, StorageError::InvalidSortKey { key: ref k, ref got } if k == key && *got == dt),
+                "{e:?}"
+            );
+            assert_eq!(
+                e.to_string(),
+                format!("sort key '{key}' must be Int64, got {dt:?}")
+            );
+        }
+    }
+
+    /// The sort key is validated before touching the filesystem, so a bad key
+    /// leaves no directory behind — and wins over `AlreadyExists`.
+    #[test]
+    fn an_invalid_sort_key_creates_nothing_and_is_checked_before_existence() {
+        let (_root, dir) = table_dir();
+        create_error(dir.clone(), sample_schema(), Some("name"));
+        assert!(!dir.exists());
+
+        fs::create_dir_all(&dir).unwrap();
+        let e = create_error(dir, sample_schema(), Some("nope"));
+        assert!(matches!(e, StorageError::ColumnNotFound(_)), "{e:?}");
+    }
+
+    #[test]
+    fn open_round_trips_the_sort_key() {
+        let (_root, dir, table) = created_with_sort_key("id");
+        drop(table);
+
+        let reopened = Table::open(dir).unwrap();
+
+        assert_eq!(reopened.sort_key.as_deref(), Some("id"));
+        assert_eq!(*reopened.schema(), sample_schema());
+    }
+
+    #[test]
+    fn open_without_a_sort_key_line_reads_none() {
+        let (_root, dir, table) = sample_table();
+        drop(table);
+
+        assert_eq!(Table::open(dir).unwrap().sort_key, None);
+    }
+
+    #[test]
+    fn open_trims_whitespace_around_the_sort_key() {
+        let (_root, dir) =
+            table_with_schema_text("version=1\ncodec=lz4\nsort_key= id \ncolumn=id:Int64\n");
+
+        assert_eq!(Table::open(dir).unwrap().sort_key.as_deref(), Some("id"));
+    }
+
+    #[test]
+    fn open_rejects_an_empty_sort_key_line() {
+        for text in [
+            "version=1\ncodec=lz4\nsort_key=\ncolumn=id:Int64\n",
+            "version=1\ncodec=lz4\nsort_key=   \ncolumn=id:Int64\n",
+        ] {
+            let (_root, dir) = table_with_schema_text(text);
+
+            assert_eq!(open_err(dir), "corrupt: sort_key line is empty", "{text:?}");
+        }
+    }
+
+    #[test]
+    fn open_rejects_a_sort_key_naming_an_unknown_column() {
+        let (_root, dir) =
+            table_with_schema_text("version=1\ncodec=lz4\nsort_key=nope\ncolumn=id:Int64\n");
+
+        assert_eq!(
+            open_err(dir),
+            "corrupt: sort key column 'nope' does not exist"
+        );
+    }
+
+    #[test]
+    fn open_rejects_a_non_int64_sort_key() {
+        let (_root, dir) = table_with_schema_text(
+            "version=1\ncodec=lz4\nsort_key=name\ncolumn=id:Int64\ncolumn=name:String\n",
+        );
+
+        assert_eq!(
+            open_err(dir),
+            "corrupt: sort key 'name' must be Int64, got String"
+        );
+    }
+
+    /// With a `sort_key=` line present the columns start on line 4, and the
+    /// enumerate index already counts the consumed sort key line.
+    #[test]
+    fn column_line_numbers_account_for_the_sort_key_line() {
+        let (_root, dir) = table_with_schema_text(
+            "version=1\ncodec=lz4\nsort_key=id\ncolumn=id:Int64\ncolumn=x:Int32\n",
+        );
+
+        assert_eq!(open_err(dir), "corrupt: line 5: invalid data type 'Int32'");
+    }
+
+    /// Only line 3 may carry the sort key; anywhere else it is just a malformed
+    /// column line.
+    #[test]
+    fn open_rejects_a_sort_key_line_after_the_columns() {
+        let (_root, dir) =
+            table_with_schema_text("version=1\ncodec=lz4\ncolumn=id:Int64\nsort_key=id\n");
+
+        assert_eq!(open_err(dir), "corrupt: line 4: expected column=...");
+    }
+
+    #[test]
+    fn a_table_with_a_sort_key_accepts_inserts_and_scans() {
+        let (_root, _dir, mut table) = created_with_sort_key("id");
+
+        table
+            .insert(&[sample_block(&[3, 1, 2], &["c", "a", "b"], &[3.0, 1.0, 2.0])])
+            .unwrap();
+
+        assert_eq!(scanned_ids(&table), vec![vec![3, 1, 2]]);
     }
 
     // ---- schema --------------------------------------------------------

@@ -1,3 +1,4 @@
+use crate::DataType;
 use crate::storage::CodecError;
 use std::io;
 use std::path::PathBuf;
@@ -18,4 +19,6 @@ pub enum StorageError {
     Codec(#[from] CodecError),
     #[error("io error: {0}")]
     Io(#[from] io::Error),
+    #[error("sort key '{key}' must be Int64, got {got:?}")]
+    InvalidSortKey { key: String, got: DataType },
 }

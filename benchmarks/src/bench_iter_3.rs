@@ -21,7 +21,7 @@ pub(super) fn prepare() {
     )] {
         let time = Instant::now();
 
-        let mut t = Table::create(dir, schema(), codec).expect("can not create table");
+        let mut t = Table::create(dir, schema(), codec, None).expect("can not create table");
 
         for block in &blocks {
             t.insert(std::slice::from_ref(block))

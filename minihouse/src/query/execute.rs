@@ -115,7 +115,7 @@ mod tests {
     fn table_of_parts(blocks: Vec<Block>) -> (TempDir, Table) {
         let root = TempDir::new().unwrap();
         let mut table =
-            Table::create(root.path().join("tbl"), sample_schema(), Codec::Lz4).unwrap();
+            Table::create(root.path().join("tbl"), sample_schema(), Codec::Lz4, None).unwrap();
         for block in blocks {
             table.insert(&[block]).unwrap();
         }
@@ -127,7 +127,7 @@ mod tests {
     fn table_of_one_part(blocks: Vec<Block>) -> (TempDir, Table) {
         let root = TempDir::new().unwrap();
         let mut table =
-            Table::create(root.path().join("tbl"), sample_schema(), Codec::Lz4).unwrap();
+            Table::create(root.path().join("tbl"), sample_schema(), Codec::Lz4, None).unwrap();
         table.insert(&blocks).unwrap();
         (root, table)
     }
