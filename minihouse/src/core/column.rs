@@ -90,6 +90,14 @@ impl Column {
             Column::String(v) => Column::String(v.filter(mask)),
         }
     }
+
+    pub(crate) fn gather(&self, indices: &[usize]) -> Column {
+        match self {
+            Column::Int64(v) => Column::Int64(gather_slice(v, indices)),
+            Column::Float64(v) => Column::Float64(gather_slice(v, indices)),
+            Column::String(v) => Column::String(v.gather(indices)),
+        }
+    }
 }
 
 fn filter_slice<T: Clone>(v: &[T], mask: &[bool], cap: usize) -> Vec<T> {
@@ -101,6 +109,10 @@ fn filter_slice<T: Clone>(v: &[T], mask: &[bool], cap: usize) -> Vec<T> {
             .map(|(x, _)| x.clone()),
     );
     out
+}
+
+fn gather_slice<T: Clone>(v: &[T], indices: &[usize]) -> Vec<T> {
+    indices.iter().map(|&i| v[i].clone()).collect()
 }
 
 #[cfg(test)]
@@ -317,5 +329,129 @@ mod tests {
         cloned.push_i64(4);
         assert_ne!(original, cloned);
         assert_eq!(original, Column::Int64(vec![1, 2, 3]));
+    }
+
+    #[test]
+    fn gather_int64_returns_values_in_index_order() {
+        let c = Column::Int64(vec![10, 20, 30, 40]);
+        assert_eq!(c.gather(&[3, 0, 2]), Column::Int64(vec![40, 10, 30]));
+    }
+
+    #[test]
+    fn gather_float64_returns_values_in_index_order() {
+        let c = Column::Float64(vec![1.5, 2.5, 3.5]);
+        assert_eq!(c.gather(&[2, 0]), Column::Float64(vec![3.5, 1.5]));
+    }
+
+    #[test]
+    fn gather_string_returns_values_in_index_order() {
+        let c = Column::String(StringColumn::new_with_values(&["a", "bb", "", "ccc"]));
+        assert_eq!(
+            c.gather(&[3, 2, 0]),
+            Column::String(StringColumn::new_with_values(&["ccc", "", "a"]))
+        );
+    }
+
+    #[test]
+    fn gather_identity_equals_original() {
+        for c in [
+            Column::Int64(vec![1, 2, 3]),
+            Column::Float64(vec![1.0, 2.0, 3.0]),
+            Column::String(StringColumn::new_with_values(&["a", "b", "c"])),
+        ] {
+            assert_eq!(c.gather(&[0, 1, 2]), c);
+        }
+    }
+
+    #[test]
+    fn gather_allows_duplicate_indices() {
+        let c = Column::Int64(vec![7, 8]);
+        assert_eq!(c.gather(&[1, 1, 0, 1]), Column::Int64(vec![8, 8, 7, 8]));
+    }
+
+    #[test]
+    fn gather_empty_indices_returns_empty_column_of_same_type() {
+        for c in [
+            Column::Int64(vec![1, 2]),
+            Column::Float64(vec![1.0, 2.0]),
+            Column::String(StringColumn::new_with_values(&["a", "b"])),
+        ] {
+            let g = c.gather(&[]);
+            assert!(g.is_empty());
+            assert_eq!(g.data_type(), c.data_type());
+        }
+    }
+
+    #[test]
+    fn gather_on_empty_column_with_empty_indices() {
+        for dt in [DataType::Int64, DataType::Float64, DataType::String] {
+            let c = Column::new(dt);
+            assert_eq!(c.gather(&[]), c);
+        }
+    }
+
+    #[test]
+    fn gather_does_not_mutate_original() {
+        let c = Column::Int64(vec![1, 2, 3]);
+        let _ = c.gather(&[2, 0]);
+        assert_eq!(c, Column::Int64(vec![1, 2, 3]));
+    }
+
+    #[test]
+    fn gather_matches_filter_for_sorted_indices() {
+        let mask = [true, false, false, true, true];
+        let indices: Vec<usize> = (0..mask.len()).filter(|&i| mask[i]).collect();
+
+        for c in [
+            Column::Int64(vec![1, 2, 3, 4, 5]),
+            Column::Float64(vec![1.0, 2.0, 3.0, 4.0, 5.0]),
+            Column::String(StringColumn::new_with_values(&["a", "b", "", "d", "e"])),
+        ] {
+            assert_eq!(c.gather(&indices), c.filter(&mask));
+        }
+    }
+
+    #[test]
+    fn gather_result_supports_push() {
+        let mut g = Column::Int64(vec![1, 2, 3]).gather(&[2]);
+        g.push_i64(9);
+        assert_eq!(g, Column::Int64(vec![3, 9]));
+    }
+
+    #[test]
+    #[should_panic]
+    fn gather_out_of_bounds_int64_panics() {
+        Column::Int64(vec![1, 2]).gather(&[2]);
+    }
+
+    #[test]
+    #[should_panic]
+    fn gather_out_of_bounds_float64_panics() {
+        Column::Float64(vec![1.0]).gather(&[1]);
+    }
+
+    #[test]
+    #[should_panic]
+    fn gather_out_of_bounds_string_panics() {
+        Column::String(StringColumn::new_with_values(&["a"])).gather(&[1]);
+    }
+
+    #[test]
+    fn filter_string_all_false_returns_empty_string_column() {
+        let c = Column::String(StringColumn::new_with_values(&["a", "b"]));
+        let filtered = c.filter(&[false, false]);
+        assert!(filtered.is_empty());
+        assert_eq!(filtered.data_type(), DataType::String);
+    }
+
+    #[test]
+    fn with_capacity_string_then_push_equals_new_then_push() {
+        let mut a = Column::with_capacity(DataType::String, 4);
+        let mut b = Column::new(DataType::String);
+        for s in ["x", "", "yz"] {
+            a.push_str(s);
+            b.push_str(s);
+        }
+        assert_eq!(a, b);
     }
 }

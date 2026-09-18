@@ -83,7 +83,7 @@ impl StringColumn {
         assert_eq!(
             mask.len(),
             self.len(),
-            "Mask length does not match number of rows"
+            "mask length does not match number of rows"
         );
 
         let num_rows = mask.iter().filter(|&&m| m).count();
@@ -116,6 +116,27 @@ impl StringColumn {
                 result.data.extend_from_slice(&self.data[start..end]);
                 result.offsets.push(result.data.len() as u32);
             }
+        }
+
+        result
+    }
+
+    pub(crate) fn gather(&self, indices: &[usize]) -> StringColumn {
+        let data_size: usize = indices
+            .iter()
+            .map(|&i| (self.offsets[i + 1] - self.offsets[i]) as usize)
+            .sum();
+
+        let mut result = StringColumn {
+            data: Vec::with_capacity(data_size),
+            offsets: Vec::with_capacity(indices.len() + 1),
+        };
+        result.offsets.push(0);
+
+        for i in indices {
+            let (start, end) = (self.offsets[*i] as usize, self.offsets[*i + 1] as usize);
+            result.data.extend_from_slice(&self.data[start..end]);
+            result.offsets.push(result.data.len() as u32);
         }
 
         result
@@ -199,7 +220,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Mask length does not match number of rows")]
+    #[should_panic(expected = "mask length does not match number of rows")]
     fn filter_mask_length_mismatch_panics() {
         let mut col = StringColumn::new();
         col.push("a");
@@ -554,5 +575,152 @@ mod tests {
     fn try_from_parts_reports_monotonic_error_before_length_error() {
         let err = StringColumn::try_from_parts(b"abc".to_vec(), vec![0, 10, 3]).unwrap_err();
         assert!(err.contains("offsets not monotonic: 10 > 3"));
+    }
+
+    #[test]
+    fn gather_returns_rows_in_index_order() {
+        let col = StringColumn::new_with_values(&["a", "bb", "ccc", "dddd"]);
+
+        let result = col.gather(&[2, 0, 3]);
+
+        assert_eq!(result, StringColumn::new_with_values(&["ccc", "a", "dddd"]));
+    }
+
+    #[test]
+    fn gather_identity_equals_original() {
+        let col = StringColumn::new_with_values(&["x", "", "日本語"]);
+
+        assert_eq!(col.gather(&[0, 1, 2]), col);
+    }
+
+    #[test]
+    fn gather_reversed() {
+        let col = StringColumn::new_with_values(&["a", "b", "c"]);
+
+        assert_eq!(
+            col.gather(&[2, 1, 0]),
+            StringColumn::new_with_values(&["c", "b", "a"])
+        );
+    }
+
+    #[test]
+    fn gather_allows_duplicate_indices() {
+        let col = StringColumn::new_with_values(&["a", "b"]);
+
+        assert_eq!(
+            col.gather(&[1, 1, 0, 1]),
+            StringColumn::new_with_values(&["b", "b", "a", "b"])
+        );
+    }
+
+    #[test]
+    fn gather_subset_may_be_shorter_than_original() {
+        let col = StringColumn::new_with_values(&["a", "b", "c", "d"]);
+
+        assert_eq!(col.gather(&[3]), StringColumn::new_with_values(&["d"]));
+    }
+
+    #[test]
+    fn gather_empty_indices_returns_empty_column() {
+        let col = StringColumn::new_with_values(&["a", "b"]);
+
+        let result = col.gather(&[]);
+
+        assert!(result.is_empty());
+        assert_eq!(result, StringColumn::new());
+    }
+
+    #[test]
+    fn gather_on_empty_column_with_empty_indices() {
+        assert_eq!(StringColumn::new().gather(&[]), StringColumn::new());
+    }
+
+    #[test]
+    fn gather_preserves_empty_and_multibyte_strings() {
+        let col = StringColumn::new_with_values(&["café", "", "日本語", "plain"]);
+
+        let result = col.gather(&[1, 2, 0, 1]);
+
+        assert_eq!(result.len(), 4);
+        assert_eq!(result.get(0), "");
+        assert_eq!(result.get(1), "日本語");
+        assert_eq!(result.get(2), "café");
+        assert_eq!(result.get(3), "");
+    }
+
+    #[test]
+    fn gather_builds_compact_offsets_and_data() {
+        let col = StringColumn::new_with_values(&["ab", "c", "def"]);
+
+        let result = col.gather(&[2, 0]);
+
+        assert_eq!(result.data(), b"defab".as_slice());
+        assert_eq!(result.offsets(), &[0, 3, 5]);
+        assert_eq!(result.data_len(), 5);
+    }
+
+    #[test]
+    fn gather_result_is_valid_for_try_from_parts() {
+        let col = StringColumn::new_with_values(&["a", "", "bcd", "e"]);
+        let gathered = col.gather(&[3, 1, 2, 2]);
+
+        let rebuilt =
+            StringColumn::try_from_parts(gathered.data().to_vec(), gathered.offsets().to_vec())
+                .unwrap();
+
+        assert_eq!(rebuilt, gathered);
+    }
+
+    #[test]
+    fn gather_does_not_mutate_original() {
+        let col = StringColumn::new_with_values(&["a", "b", "c"]);
+        let original = col.clone();
+
+        let _ = col.gather(&[2, 0]);
+
+        assert_eq!(col, original);
+    }
+
+    #[test]
+    fn gather_result_can_be_pushed_to() {
+        let col = StringColumn::new_with_values(&["a", "b", "c"]);
+        let mut result = col.gather(&[2]);
+
+        result.push("new");
+
+        assert_eq!(result, StringColumn::new_with_values(&["c", "new"]));
+    }
+
+    #[test]
+    fn gather_matches_filter_for_sorted_indices() {
+        let col = StringColumn::new_with_values(&["a", "bb", "", "dddd", "e"]);
+        let mask = [true, false, true, true, false];
+        let indices: Vec<usize> = (0..mask.len()).filter(|&i| mask[i]).collect();
+
+        assert_eq!(col.gather(&indices), col.filter(&mask));
+    }
+
+    #[test]
+    #[should_panic]
+    fn gather_out_of_bounds_index_panics() {
+        let col = StringColumn::new_with_values(&["a", "b"]);
+        col.gather(&[2]);
+    }
+
+    #[test]
+    #[should_panic]
+    fn gather_on_empty_column_with_any_index_panics() {
+        StringColumn::new().gather(&[0]);
+    }
+
+    #[test]
+    fn data_len_tracks_total_bytes() {
+        let mut col = StringColumn::new();
+        assert_eq!(col.data_len(), 0);
+
+        col.push("ab");
+        col.push("");
+        col.push("日本");
+        assert_eq!(col.data_len(), 2 + 6);
     }
 }
