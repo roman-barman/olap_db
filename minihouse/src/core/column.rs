@@ -98,6 +98,20 @@ impl Column {
             Column::String(v) => Column::String(v.gather(indices)),
         }
     }
+
+    pub(crate) fn append(&mut self, other: &Column) {
+        let dt = self.data_type().as_str();
+        match (self, other) {
+            (Column::Int64(s), Column::Int64(o)) => s.extend_from_slice(o),
+            (Column::Float64(s), Column::Float64(o)) => s.extend_from_slice(o),
+            (Column::String(s), Column::String(o)) => s.append(o),
+            _ => panic!(
+                "cannot append column {} to {}",
+                other.data_type().as_str(),
+                dt
+            ),
+        }
+    }
 }
 
 fn filter_slice<T: Clone>(v: &[T], mask: &[bool], cap: usize) -> Vec<T> {
@@ -434,6 +448,142 @@ mod tests {
     #[should_panic]
     fn gather_out_of_bounds_string_panics() {
         Column::String(StringColumn::new_with_values(&["a"])).gather(&[1]);
+    }
+
+    #[test]
+    fn append_int64_concatenates_in_order() {
+        let mut c = Column::Int64(vec![1, 2]);
+        c.append(&Column::Int64(vec![3, 4]));
+        assert_eq!(c, Column::Int64(vec![1, 2, 3, 4]));
+    }
+
+    #[test]
+    fn append_float64_concatenates_in_order() {
+        let mut c = Column::Float64(vec![1.5]);
+        c.append(&Column::Float64(vec![2.5, 3.5]));
+        assert_eq!(c, Column::Float64(vec![1.5, 2.5, 3.5]));
+    }
+
+    #[test]
+    fn append_string_concatenates_in_order() {
+        let mut c = Column::String(StringColumn::new_with_values(&["a", ""]));
+        c.append(&Column::String(StringColumn::new_with_values(&["bb", "c"])));
+        assert_eq!(
+            c,
+            Column::String(StringColumn::new_with_values(&["a", "", "bb", "c"]))
+        );
+    }
+
+    #[test]
+    fn append_empty_other_is_noop() {
+        for c in [
+            Column::Int64(vec![1, 2]),
+            Column::Float64(vec![1.0, 2.0]),
+            Column::String(StringColumn::new_with_values(&["a", "b"])),
+        ] {
+            let mut appended = c.clone();
+            appended.append(&Column::new(c.data_type()));
+            assert_eq!(appended, c);
+        }
+    }
+
+    #[test]
+    fn append_to_empty_equals_other() {
+        for other in [
+            Column::Int64(vec![1, 2]),
+            Column::Float64(vec![1.0, 2.0]),
+            Column::String(StringColumn::new_with_values(&["a", "b"])),
+        ] {
+            let mut c = Column::new(other.data_type());
+            c.append(&other);
+            assert_eq!(c, other);
+        }
+    }
+
+    #[test]
+    fn append_both_empty_stays_empty_and_keeps_type() {
+        for dt in [DataType::Int64, DataType::Float64, DataType::String] {
+            let mut c = Column::new(dt);
+            c.append(&Column::new(dt));
+            assert!(c.is_empty());
+            assert_eq!(c.data_type(), dt);
+        }
+    }
+
+    #[test]
+    fn append_does_not_mutate_other() {
+        let other = Column::String(StringColumn::new_with_values(&["x", "y"]));
+        let snapshot = other.clone();
+        let mut c = Column::new(DataType::String);
+        c.append(&other);
+        assert_eq!(other, snapshot);
+    }
+
+    #[test]
+    fn append_equals_pushing_each_value() {
+        let mut appended = Column::Int64(vec![1, 2]);
+        appended.append(&Column::Int64(vec![3]));
+
+        let mut pushed = Column::new(DataType::Int64);
+        for v in [1, 2, 3] {
+            pushed.push_i64(v);
+        }
+        assert_eq!(appended, pushed);
+    }
+
+    #[test]
+    fn append_result_supports_push() {
+        let mut c = Column::Float64(vec![1.0]);
+        c.append(&Column::Float64(vec![2.0]));
+        c.push_f64(3.0);
+        assert_eq!(c, Column::Float64(vec![1.0, 2.0, 3.0]));
+    }
+
+    #[test]
+    fn append_gathered_chunks_reassembles_permutation() {
+        let src = Column::String(StringColumn::new_with_values(&["a", "bb", "", "d"]));
+        let mut c = src.gather(&[3, 1]);
+        c.append(&src.gather(&[0, 2]));
+        assert_eq!(
+            c,
+            Column::String(StringColumn::new_with_values(&["d", "bb", "a", ""]))
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot append column Float64 to Int64")]
+    fn append_float64_to_int64_panics() {
+        Column::new(DataType::Int64).append(&Column::new(DataType::Float64));
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot append column String to Int64")]
+    fn append_string_to_int64_panics() {
+        Column::new(DataType::Int64).append(&Column::new(DataType::String));
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot append column Int64 to Float64")]
+    fn append_int64_to_float64_panics() {
+        Column::new(DataType::Float64).append(&Column::new(DataType::Int64));
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot append column String to Float64")]
+    fn append_string_to_float64_panics() {
+        Column::new(DataType::Float64).append(&Column::new(DataType::String));
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot append column Int64 to String")]
+    fn append_int64_to_string_panics() {
+        Column::new(DataType::String).append(&Column::new(DataType::Int64));
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot append column Float64 to String")]
+    fn append_float64_to_string_panics() {
+        Column::new(DataType::String).append(&Column::new(DataType::Float64));
     }
 
     #[test]

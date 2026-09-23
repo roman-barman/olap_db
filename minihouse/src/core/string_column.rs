@@ -142,6 +142,13 @@ impl StringColumn {
         result
     }
 
+    pub(crate) fn append(&mut self, other: &StringColumn) {
+        let shift = u32::try_from(self.data.len()).expect("string column data exceeds u32 limit");
+        self.data.extend_from_slice(&other.data);
+        self.offsets
+            .extend(other.offsets[1..].iter().map(|&o| o + shift));
+    }
+
     pub(crate) fn data_len(&self) -> usize {
         self.data.len()
     }
@@ -711,6 +718,131 @@ mod tests {
     #[should_panic]
     fn gather_on_empty_column_with_any_index_panics() {
         StringColumn::new().gather(&[0]);
+    }
+
+    #[test]
+    fn append_concatenates_values_in_order() {
+        let mut col = StringColumn::new_with_values(&["a", "bb"]);
+        col.append(&StringColumn::new_with_values(&["ccc", "d"]));
+
+        assert_eq!(col, StringColumn::new_with_values(&["a", "bb", "ccc", "d"]));
+    }
+
+    #[test]
+    fn append_shifts_offsets_of_other() {
+        let mut col = StringColumn::new_with_values(&["ab", "c"]);
+        col.append(&StringColumn::new_with_values(&["de", "", "f"]));
+
+        assert_eq!(col.offsets(), &[0, 2, 3, 5, 5, 6]);
+        assert_eq!(col.data(), b"abcdef");
+    }
+
+    #[test]
+    fn append_empty_other_is_noop() {
+        let mut col = StringColumn::new_with_values(&["a", "b"]);
+        let original = col.clone();
+
+        col.append(&StringColumn::new());
+
+        assert_eq!(col, original);
+    }
+
+    #[test]
+    fn append_to_empty_equals_other() {
+        let other = StringColumn::new_with_values(&["x", "", "yz"]);
+        let mut col = StringColumn::new();
+
+        col.append(&other);
+
+        assert_eq!(col, other);
+    }
+
+    #[test]
+    fn append_both_empty_stays_empty() {
+        let mut col = StringColumn::new();
+        col.append(&StringColumn::new());
+
+        assert!(col.is_empty());
+        assert_eq!(col.offsets(), &[0]);
+    }
+
+    #[test]
+    fn append_preserves_empty_strings_and_multibyte() {
+        let mut col = StringColumn::new_with_values(&["", "日本"]);
+        col.append(&StringColumn::new_with_values(&["", "привет", ""]));
+
+        assert_eq!(col.len(), 5);
+        assert_eq!(col.get(0), "");
+        assert_eq!(col.get(1), "日本");
+        assert_eq!(col.get(2), "");
+        assert_eq!(col.get(3), "привет");
+        assert_eq!(col.get(4), "");
+    }
+
+    #[test]
+    fn append_equals_pushing_each_value() {
+        let left = ["a", "", "bcd"];
+        let right = ["", "ef", "g"];
+
+        let mut appended = StringColumn::new_with_values(&left);
+        appended.append(&StringColumn::new_with_values(&right));
+
+        let mut pushed = StringColumn::new();
+        for s in left.iter().chain(right.iter()) {
+            pushed.push(s);
+        }
+
+        assert_eq!(appended, pushed);
+    }
+
+    #[test]
+    fn append_result_passes_try_from_parts_validation() {
+        let mut col = StringColumn::new_with_values(&["ab", "", "c"]);
+        col.append(&StringColumn::new_with_values(&["d", "ef"]));
+
+        let rebuilt =
+            StringColumn::try_from_parts(col.data().to_vec(), col.offsets().to_vec()).unwrap();
+
+        assert_eq!(rebuilt, col);
+    }
+
+    #[test]
+    fn append_self_clone_duplicates_values() {
+        let mut col = StringColumn::new_with_values(&["a", "bc"]);
+        let copy = col.clone();
+
+        col.append(&copy);
+
+        assert_eq!(col, StringColumn::new_with_values(&["a", "bc", "a", "bc"]));
+    }
+
+    #[test]
+    fn append_does_not_mutate_other() {
+        let other = StringColumn::new_with_values(&["x", "y"]);
+        let snapshot = other.clone();
+        let mut col = StringColumn::new_with_values(&["a"]);
+
+        col.append(&other);
+
+        assert_eq!(other, snapshot);
+    }
+
+    #[test]
+    fn append_result_can_be_pushed_to() {
+        let mut col = StringColumn::new_with_values(&["a"]);
+        col.append(&StringColumn::new_with_values(&["b"]));
+        col.push("c");
+
+        assert_eq!(col, StringColumn::new_with_values(&["a", "b", "c"]));
+    }
+
+    #[test]
+    fn append_after_gather_and_filter() {
+        let src = StringColumn::new_with_values(&["a", "bb", "ccc"]);
+        let mut col = src.gather(&[2, 0]);
+        col.append(&src.filter(&[false, true, false]));
+
+        assert_eq!(col, StringColumn::new_with_values(&["ccc", "a", "bb"]));
     }
 
     #[test]
