@@ -73,7 +73,12 @@ impl Block {
     }
 }
 
-fn sort_blocks(blocks: &[&Block], key: &str, schema: &Schema, block_size: usize) -> Vec<Block> {
+pub(crate) fn sort_blocks(
+    blocks: &[&Block],
+    key: &str,
+    schema: &Schema,
+    block_size: usize,
+) -> Vec<Block> {
     let total_rows_count: usize = blocks.iter().map(|block| block.num_rows).sum();
 
     let mut result_columns: Vec<(String, Column)> = schema

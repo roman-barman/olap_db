@@ -1,4 +1,4 @@
-use crate::core::DataType;
+use crate::core::{DataType, sort_blocks};
 use crate::storage::{Codec, PartReader, PartWriter, StorageError};
 use crate::{Block, Schema};
 use std::fs;
@@ -116,6 +116,15 @@ impl Table {
         if blocks.is_empty() {
             return Ok(());
         }
+
+        let sorted;
+        let blocks: Vec<&Block> = match &self.sort_key {
+            Some(key) => {
+                sorted = sort_blocks(&blocks, key, &self.schema, 8192);
+                sorted.iter().collect()
+            }
+            None => blocks,
+        };
 
         let mut writer = PartWriter::new(
             self.dir.join(part_dir_name(self.next_part_id)),
@@ -1401,7 +1410,171 @@ mod tests {
             .insert(&[sample_block(&[3, 1, 2], &["c", "a", "b"], &[3.0, 1.0, 2.0])])
             .unwrap();
 
-        assert_eq!(scanned_ids(&table), vec![vec![3, 1, 2]]);
+        assert_eq!(scanned_ids(&table), vec![vec![1, 2, 3]]);
+    }
+
+    /// Every column is permuted together with the key, so rows stay intact.
+    #[test]
+    fn insert_with_a_sort_key_keeps_rows_aligned() {
+        let (_root, _dir, mut table) = created_with_sort_key("id");
+
+        table
+            .insert(&[sample_block(&[3, 1, 2], &["c", "a", "b"], &[3.0, 1.0, 2.0])])
+            .unwrap();
+
+        let blocks = scan_all(&table, &["id", "name", "score"]).unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(i64s(&blocks[0], "id"), vec![1, 2, 3]);
+        assert_eq!(strs(&blocks[0], "name"), vec!["a", "b", "c"]);
+        assert_eq!(f64s(&blocks[0], "score"), vec![1.0, 2.0, 3.0]);
+    }
+
+    /// All blocks of one insert are merged before sorting, so the part holds a
+    /// single sorted run rather than individually sorted blocks.
+    #[test]
+    fn insert_with_a_sort_key_merges_and_sorts_across_blocks() {
+        let (_root, _dir, mut table) = created_with_sort_key("id");
+
+        table
+            .insert(&[
+                sample_block(&[5, 1], &["e", "a"], &[5.0, 1.0]),
+                sample_block(&[4, 2, 3], &["d", "b", "c"], &[4.0, 2.0, 3.0]),
+            ])
+            .unwrap();
+
+        let blocks = scan_all(&table, &["id", "name"]).unwrap();
+        assert_eq!(row_counts(&blocks), vec![5]);
+        assert_eq!(i64s(&blocks[0], "id"), vec![1, 2, 3, 4, 5]);
+        assert_eq!(strs(&blocks[0], "name"), vec!["a", "b", "c", "d", "e"]);
+    }
+
+    /// Sorting is per insert: each part is sorted on its own, parts are never
+    /// merged with each other.
+    #[test]
+    fn each_insert_with_a_sort_key_sorts_only_its_own_part() {
+        let (_root, _dir, mut table) = created_with_sort_key("id");
+
+        table
+            .insert(&[sample_block(&[9, 7], &["i", "g"], &[9.0, 7.0])])
+            .unwrap();
+        table
+            .insert(&[sample_block(&[2, 1], &["b", "a"], &[2.0, 1.0])])
+            .unwrap();
+
+        assert_eq!(scanned_ids(&table), vec![vec![7, 9], vec![1, 2]]);
+    }
+
+    /// Rows with equal keys keep their insertion order, including across blocks.
+    #[test]
+    fn insert_with_a_sort_key_is_stable_for_equal_keys() {
+        let (_root, _dir, mut table) = created_with_sort_key("id");
+
+        table
+            .insert(&[
+                sample_block(&[2, 1, 2], &["x", "a", "y"], &[1.0, 2.0, 3.0]),
+                sample_block(&[1, 2], &["b", "z"], &[4.0, 5.0]),
+            ])
+            .unwrap();
+
+        let blocks = scan_all(&table, &["id", "name"]).unwrap();
+        assert_eq!(i64s(&blocks[0], "id"), vec![1, 1, 2, 2, 2]);
+        assert_eq!(strs(&blocks[0], "name"), vec!["a", "b", "x", "y", "z"]);
+    }
+
+    #[test]
+    fn insert_with_a_sort_key_handles_negative_and_extreme_keys() {
+        let (_root, _dir, mut table) = created_with_sort_key("id");
+
+        table
+            .insert(&[sample_block(
+                &[0, i64::MAX, -1, i64::MIN],
+                &["z", "max", "m", "min"],
+                &[0.0, 1.0, 2.0, 3.0],
+            )])
+            .unwrap();
+
+        assert_eq!(scanned_ids(&table), vec![vec![i64::MIN, -1, 0, i64::MAX]]);
+    }
+
+    /// The sorted run is re-chunked into blocks of 8192 rows, regardless of how
+    /// the input was split.
+    #[test]
+    fn insert_with_a_sort_key_rechunks_into_8192_row_blocks() {
+        let (_root, _dir, mut table) = created_with_sort_key("id");
+        let n = 10_000_i64;
+        let ids: Vec<i64> = (0..n).rev().collect();
+        let names: Vec<String> = ids.iter().map(|i| format!("n{i}")).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let scores: Vec<f64> = ids.iter().map(|&i| i as f64).collect();
+
+        table
+            .insert(&[
+                sample_block(&ids[..3], &names[..3], &scores[..3]),
+                sample_block(&ids[3..], &names[3..], &scores[3..]),
+            ])
+            .unwrap();
+
+        let blocks = scan_all(&table, &["id", "name", "score"]).unwrap();
+        assert_eq!(row_counts(&blocks), vec![8192, 1808]);
+        let all_ids: Vec<i64> = blocks.iter().flat_map(|b| i64s(b, "id")).collect();
+        assert_eq!(all_ids, (0..n).collect::<Vec<_>>());
+        for b in &blocks {
+            let ids = i64s(b, "id");
+            assert_eq!(
+                strs(b, "name"),
+                ids.iter().map(|i| format!("n{i}")).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                f64s(b, "score"),
+                ids.iter().map(|&i| i as f64).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// Zero-row blocks are dropped before sorting and do not disturb the result.
+    #[test]
+    fn insert_with_a_sort_key_ignores_zero_row_blocks() {
+        let (_root, _dir, mut table) = created_with_sort_key("id");
+
+        table
+            .insert(&[
+                empty_block(),
+                sample_block(&[2, 1], &["b", "a"], &[2.0, 1.0]),
+                empty_block(),
+            ])
+            .unwrap();
+
+        assert_eq!(scanned_ids(&table), vec![vec![1, 2]]);
+    }
+
+    /// A reopened table picks the sort key up from `schema.txt` and keeps
+    /// sorting new inserts.
+    #[test]
+    fn a_reopened_table_keeps_sorting_by_its_sort_key() {
+        let (_root, dir, table) = created_with_sort_key("id");
+        drop(table);
+        let mut table = Table::open(dir).unwrap();
+
+        table
+            .insert(&[sample_block(&[3, 1, 2], &["c", "a", "b"], &[3.0, 1.0, 2.0])])
+            .unwrap();
+
+        assert_eq!(scanned_ids(&table), vec![vec![1, 2, 3]]);
+    }
+
+    /// Without a sort key the insert order is preserved untouched.
+    #[test]
+    fn insert_without_a_sort_key_preserves_input_order() {
+        let (_root, _dir, mut table) = sample_table();
+
+        table
+            .insert(&[
+                sample_block(&[3, 1], &["c", "a"], &[3.0, 1.0]),
+                sample_block(&[2], &["b"], &[2.0]),
+            ])
+            .unwrap();
+
+        assert_eq!(scanned_ids(&table), vec![vec![3, 1], vec![2]]);
     }
 
     // ---- schema --------------------------------------------------------

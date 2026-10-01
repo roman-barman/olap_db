@@ -6,6 +6,7 @@ mod string_column;
 mod value;
 
 pub use block::Block;
+pub(crate) use block::sort_blocks;
 pub use column::Column;
 pub use data_type::DataType;
 pub use schema::Schema;
